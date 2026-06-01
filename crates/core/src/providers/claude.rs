@@ -6,7 +6,10 @@ use async_trait::async_trait;
 use kalpa_libgen::claude;
 
 use crate::error::{KalpaError, KalpaResult};
-use crate::provider::CompletionProvider;
+use crate::generation::{GenerationRequest, GenerationResponse, Part};
+use crate::provider::{
+    CompletionProvider, GenerationProvider, JobHandle, PollStatus, SubmitOutcome,
+};
 use crate::types::{CompletionRequest, CompletionResponse, Message, Role, Usage};
 
 /// Claude provider for Anthropic's Claude models.
@@ -19,33 +22,31 @@ impl ClaudeProvider {
     ///
     /// # Arguments
     /// * `api_key` - Anthropic API key
-    ///
-    /// # Errors
-    /// Returns an error if the API key contains invalid header characters.
-    pub fn new(api_key: String) -> KalpaResult<Self> {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            "x-api-key",
-            reqwest::header::HeaderValue::from_str(&api_key)
-                .map_err(|e| KalpaError::Auth(format!("Invalid API key format: {}", e)))?,
-        );
-        headers.insert(
-            "anthropic-version",
-            reqwest::header::HeaderValue::from_static("2023-06-01"),
-        );
-        headers.insert(
-            reqwest::header::CONTENT_TYPE,
-            reqwest::header::HeaderValue::from_static("application/json"),
+    pub fn new(api_key: String) -> Self {
+        let client = claude::Client::new_with_client(
+            "https://api.anthropic.com",
+            reqwest::Client::builder()
+                .default_headers({
+                    let mut headers = reqwest::header::HeaderMap::new();
+                    headers.insert(
+                        "x-api-key",
+                        reqwest::header::HeaderValue::from_str(&api_key).unwrap(),
+                    );
+                    headers.insert(
+                        "anthropic-version",
+                        reqwest::header::HeaderValue::from_static("2023-06-01"),
+                    );
+                    headers.insert(
+                        reqwest::header::CONTENT_TYPE,
+                        reqwest::header::HeaderValue::from_static("application/json"),
+                    );
+                    headers
+                })
+                .build()
+                .unwrap(),
         );
 
-        let http_client = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()
-            .map_err(|e| KalpaError::Config(format!("Failed to build HTTP client: {}", e)))?;
-
-        let client = claude::Client::new_with_client("https://api.anthropic.com", http_client);
-
-        Ok(Self { client })
+        Self { client }
     }
 
     /// Convert kalpa Messages to Claude InputMessages, separating system prompt.
@@ -180,5 +181,38 @@ impl CompletionProvider for ClaudeProvider {
 
         self.complete(&request).await?;
         Ok(())
+    }
+}
+
+// ─── Unified GenerationProvider (chat → text part) ───────────────────────────
+
+#[async_trait]
+impl GenerationProvider for ClaudeProvider {
+    fn name(&self) -> &str {
+        "claude"
+    }
+
+    async fn submit(&self, request: &GenerationRequest) -> KalpaResult<SubmitOutcome> {
+        let model = request.model.split().1.to_string();
+        let prompt = request.text_prompt()?;
+
+        let comp_req = CompletionRequest {
+            model: model.clone(),
+            messages: vec![Message { role: Role::User, content: prompt }],
+            max_tokens: Some(1024),
+            temperature: None,
+            top_p: None,
+            stop_sequences: None,
+        };
+        let resp = self.complete(&comp_req).await?;
+        Ok(SubmitOutcome::Sync(GenerationResponse {
+            model,
+            parts: vec![Part::Text { text: resp.content }],
+            usage: resp.usage,
+        }))
+    }
+
+    async fn poll(&self, _handle: &JobHandle) -> KalpaResult<PollStatus> {
+        Err(KalpaError::Other("claude generation is synchronous; poll not supported".into()))
     }
 }

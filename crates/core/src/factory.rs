@@ -25,7 +25,7 @@ impl ProviderFactory {
             ))?
             .to_string();
 
-        OpenAIProvider::new(api_key)
+        Ok(OpenAIProvider::new(api_key))
     }
 
     /// Create a Claude provider from config.
@@ -37,7 +37,7 @@ impl ProviderFactory {
             ))?
             .to_string();
 
-        ClaudeProvider::new(api_key)
+        Ok(ClaudeProvider::new(api_key))
     }
 
     /// Create a Fal.ai provider from config.
@@ -49,7 +49,7 @@ impl ProviderFactory {
             ))?
             .to_string();
 
-        FalAIProvider::new(api_key)
+        Ok(FalAIProvider::new(api_key))
     }
 
     /// Create a Vertex AI provider from config (requires async for OAuth).
@@ -72,7 +72,7 @@ impl ProviderFactory {
         let project_id = auth_token.project_id.clone();
         let gcs_bucket = config.get_gcs_bucket(Provider::Vertex).map(|s| s.to_string());
 
-        VertexProvider::new(auth_token.access_token, project_id, location, gcs_bucket)
+        Ok(VertexProvider::new(auth_token.access_token, project_id, location, gcs_bucket))
     }
 
     /// Get the API key for a provider (non-Vertex).

@@ -33,3 +33,4 @@ crates/libgen/sdk/*.rs
 # Environment / secrets
 .env
 .env.local
+plans/

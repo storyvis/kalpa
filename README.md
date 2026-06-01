@@ -1,52 +1,67 @@
-# Kalpa
+# kalpa
 
-A unified CLI and Rust library for AI generative models.
+> A unified CLI and Rust library for AI generative models
 
-Kalpa provides a consistent interface to interact with multiple AI providers from your terminal or Rust code.
+**kalpa** provides a beautiful, consistent interface to interact with multiple AI providers (OpenAI, Google Gemini, Vertex AI, Fal.ai) from your terminal or Rust code.
 
-## Features
+## ✨ Features
 
-- **Multi-Modal Generation** — Text, images, and video from a single tool
-- **Multiple Providers** — OpenAI, Google Gemini, and Vertex AI
-- **Dual Interface** — Use as a Rust library or command-line tool
-- **Type-Safe** — Generated from OpenAPI specs
-- **Async** — Built on Tokio for high performance
+- 🎨 **Multi-Modal**: Generate text, images, and videos
+- 🔌 **Multiple Providers**: OpenAI, Gemini, Vertex AI, Fal.ai
+- 📚 **Library + CLI**: Use as a Rust library or command-line tool
+- 🎯 **Type-Safe**: Generated from OpenAPI specs where possible
+- ⚡ **Async**: Built on tokio for high performance
+- 🎨 **Beautiful UI**: Colored output, progress indicators
 
-## Installation
+## 🚀 Quick Start
+
+### Installation
 
 ```bash
-git clone https://github.com/storyvis/kalpa.git
+# Clone the repository
+git clone https://github.com/shaswot16/kalpa.git
 cd kalpa
+
+# Build the project
 cargo build --release
+
+# The binary will be at target/release/kalpa
 ```
 
-The binary will be available at `target/release/kalpa`.
-
-## Quick Start
+### Basic Usage
 
 ```bash
-# Configure a provider
+# 1. Configure a provider
 kalpa configure
 
-# Verify authentication
-kalpa auth --all
+# 2. Verify authentication
+kalpa auth -f
 
-# List available models
-kalpa models
+# 3. See available models
+kalpa models -f
 
-# Generate content
-kalpa generate -g text "Explain quantum computing in simple terms"
+# 4. Generate content
+kalpa generate -f image "A cyberpunk city at night"
 ```
 
-## Provider Support
+## 📋 Provider Support
 
-| Provider | Text | Images | Video | Authentication |
-|----------|------|--------|-------|----------------|
-| OpenAI | ✅ | ✅ | — | API Key |
-| Gemini | ✅ | — | — | API Key |
-| Vertex AI | ✅ | ✅ | ✅ | Service Account JSON |
+| Provider | Text | Images | Videos | Authentication |
+|----------|------|--------|--------|----------------|
+| **Fal.ai** | ❌ | ✅ | ✅ | API Key |
+| **OpenAI** | ✅ | ✅ | ❌ | API Key |
+| **Gemini** | ✅ | ❌ | ❌ | API Key |
+| **Vertex AI** | ✅ | ✅ | ✅ | Service Account JSON |
 
-## Configuration
+## 🔧 Configuration
+
+### Fal.ai
+
+```bash
+kalpa configure
+# Select "Fal.ai"
+# Enter your API key from https://fal.ai/dashboard/keys
+```
 
 ### OpenAI
 
@@ -69,180 +84,305 @@ kalpa configure
 ```bash
 kalpa configure
 # Select "Google Vertex AI"
-# Provide path to service account JSON
-# Enter GCS bucket (optional)
-# Enter region (e.g., us-central1)
+# Provide path to service account JSON: ~/keys/my-project-key.json
+# ✓ Detected project ID: my-project-123
+# Enter GCS bucket (optional): gs://my-bucket
+# Enter region: us-central1
 ```
 
-To obtain Vertex AI credentials:
-
-1. Open the [Google Cloud Console](https://console.cloud.google.com/)
+**Get Vertex AI credentials:**
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
 2. Create a service account with Vertex AI permissions
 3. Download the JSON key file
-4. Provide the path to this file during configuration
+4. Use the path to this JSON file in configuration
 
-See [docs/VERTEX_AI_SETUP.md](docs/VERTEX_AI_SETUP.md) for detailed instructions.
+## 💻 Command Reference
 
-## Usage Examples
+### `kalpa configure`
 
-### Text Generation
+Interactive configuration wizard for setting up providers.
 
 ```bash
-# Gemini
-kalpa generate -g text "Explain machine learning"
-kalpa generate -g --model gemini-3.1-flash text "Quick summary"
-kalpa generate -g --model gemini-1.5-pro text "Complex reasoning task"
+kalpa configure              # Interactive setup
+kalpa configure --show       # View current configuration
+kalpa configure --set gemini.api_key YOUR_KEY
+```
 
-# OpenAI
+### `kalpa auth`
+
+Verify API keys and authentication.
+
+```bash
+kalpa auth -f               # Verify Fal.ai
+kalpa auth -o               # Verify OpenAI
+kalpa auth -g               # Verify Gemini
+kalpa auth -v               # Verify Vertex AI
+kalpa auth --all            # Verify all configured providers
+```
+
+### `kalpa models`
+
+List available models for each provider.
+
+```bash
+kalpa models                # List all models
+kalpa models -f             # List Fal.ai models only
+kalpa models -o             # List OpenAI models only
+kalpa models -g             # List Gemini models only
+kalpa models -v             # List Vertex AI models only
+```
+
+### `kalpa generate`
+
+Generate content (text, images, videos).
+
+**Basic syntax:**
+```bash
+kalpa generate -<provider> [--model <model-name>] <type> "<prompt>"
+```
+
+**Fal.ai Examples:**
+
+```bash
+# Text-to-Image (default model)
+kalpa generate -f image "A red apple on a wooden table"
+
+# Text-to-Image (specific model)
+kalpa generate -f --model fal-ai/flux/dev image "Cyberpunk cityscape"
+kalpa generate -f --model fal-ai/flux-pro image "Photorealistic portrait"
+kalpa generate -f --model fal-ai/flux-realism image "Mountain landscape"
+
+# Text-to-Video
+kalpa generate -f video "Ocean waves crashing on shore"
+kalpa generate -f --model fal-ai/minimax/video-01 video "Flying bird"
+kalpa generate -f --model fal-ai/hunyuan-video video "Sunset timelapse"
+
+# Image-to-Video
+kalpa generate -f \
+    --model fal-ai/luma-dream-machine \
+    --image-url "https://example.com/image.jpg" \
+    video "Animate this scene"
+```
+
+**OpenAI Examples:**
+
+```bash
+# Text generation
 kalpa generate -o text "Explain quantum computing"
 kalpa generate -o --model gpt-4.1 text "Write a haiku about code"
-kalpa generate -o --model gpt-4.1-mini text "Summarize this concept"
+kalpa generate -o --model gpt-4.1-mini text "Quick summary please"
 
-# Vertex AI
-kalpa generate -v text "Explain distributed systems"
-kalpa generate -v --model gemini-3.1-flash text "Quick question"
-```
-
-### Image Generation
-
-```bash
-# OpenAI (DALL·E)
+# Image generation
 kalpa generate -o image "Abstract geometric art"
 kalpa generate -o --model dall-e-3 image "Surreal landscape"
-
-# Vertex AI (Imagen)
-kalpa generate -v image "Beautiful sunset over mountains"
-kalpa generate -v --model imagen-3.0-generate-001 image "Modern architecture"
+kalpa generate -o --model dall-e-2 image "Vintage poster design"
 ```
 
-### Video Generation
+**Gemini Examples:**
 
 ```bash
-# Vertex AI (Veo)
+# Text generation
+kalpa generate -g text "Hello, how are you?"
+kalpa generate -g --model gemini-3.1-flash text "Fast response needed"
+kalpa generate -g --model gemini-1.5-pro text "Complex reasoning task"
+```
+
+**Vertex AI Examples:**
+
+```bash
+# Text (Gemini)
+kalpa generate -v text "Explain machine learning"
+kalpa generate -v --model gemini-3.1-flash text "Quick question"
+
+# Images (Imagen)
+kalpa generate -v image "Beautiful sunset over mountains"
+kalpa generate -v --model imagen-3.0-generate-001 image "Modern architecture"
+
+# Videos (Veo)
 kalpa generate -v video "A spinning globe"
 kalpa generate -v --model veo-001 video "Time-lapse of city life"
 ```
 
-## Command Reference
+### `kalpa status`
 
-| Command | Description |
-|---------|-------------|
-| `kalpa configure` | Interactive provider setup |
-| `kalpa configure --show` | View current configuration |
-| `kalpa auth --all` | Verify all provider credentials |
-| `kalpa auth -o / -g / -v` | Verify a specific provider |
-| `kalpa models` | List all available models |
-| `kalpa models -o / -g / -v` | List models for a specific provider |
-| `kalpa generate` | Generate text, images, or video |
-| `kalpa status` | Check provider status |
+Check the status of all configured providers.
 
-## Available Models
+```bash
+kalpa status                # View all provider statuses
+```
 
-### Gemini
+## 🎨 Available Models
 
-| Model | Notes |
-|-------|-------|
-| `gemini-3.1-flash` | Fast and efficient |
-| `gemini-1.5-flash` | Previous generation fast model |
-| `gemini-1.5-pro` | Most capable |
+### Fal.ai
+
+**Text-to-Image (8 models):**
+- `fal-ai/flux/dev` ⭐ Balanced quality/speed
+- `fal-ai/flux/schnell` ⚡ Fastest
+- `fal-ai/flux-pro` 💎 Highest quality
+- `fal-ai/flux-realism` 📷 Photorealistic
+- `fal-ai/recraft-v3`
+- `fal-ai/aura-flow`
+- `fal-ai/stable-diffusion-v3-medium`
+- `fal-ai/fast-sdxl`
+
+**Text-to-Video (7 models):**
+- `fal-ai/minimax/video-01` ⭐ Great for human motion, 6-second clips
+- `fal-ai/minimax/video-01-live` 📹 Live version with 6-second clips at 1280×720
+- `fal-ai/hunyuan-video` 🎬 Open-weight, high visual quality, strong text-video alignment
+- `fal-ai/mochi-v1` 🎯 High-fidelity motion, strong prompt adherence
+- `fal-ai/kling-video/v1/standard/text-to-video`
+- `fal-ai/kling-video/v1.5/standard/text-to-video`
+- `fal-ai/wan/v2.2-a14b/text-to-video`
+
+**Image-to-Video (5 models):**
+- `fal-ai/luma-dream-machine` ⭐ Recommended
+- `fal-ai/kling-video/v1/standard/image-to-video`
+- `fal-ai/kling-video/v1.5/standard/image-to-video`
+- `fal-ai/minimax/video-01/image-to-video`
+- `fal-ai/wan/v2.2-a14b/image-to-video`
 
 ### OpenAI
 
-| Model | Type | Notes |
-|-------|------|-------|
-| `gpt-4.1` | Text | Latest GPT-4 Turbo |
-| `gpt-4.1-mini` | Text | Fast and affordable |
-| `dall-e-3` | Image | Highest quality |
-| `dall-e-2` | Image | Classic version |
+**Text Models:**
+- `gpt-4.1` ⭐ Latest GPT-4 Turbo
+- `gpt-4.1-mini` ⚡ Fast and affordable
+- `gpt-4`
+- `gpt-3.5-turbo`
+
+**Image Models:**
+- `dall-e-3` ⭐ Latest, highest quality
+- `dall-e-2` Classic version
+
+### Gemini
+
+**Text Models:**
+- `gemini-3.1-flash` ⭐ Fast and efficient
+- `gemini-1.5-flash`
+- `gemini-1.5-pro` 💎 Most capable
 
 ### Vertex AI
 
-| Model | Type | Notes |
-|-------|------|-------|
-| `gemini-3.1-flash` | Text | Fast |
-| `gemini-1.5-pro` | Text | Most capable |
-| `imagen-3.0-generate-001` | Image | Latest Imagen |
-| `veo-001` | Video | Google's video generation |
+**Text (Gemini):**
+- `gemini-3.1-flash` ⭐ Fast
+- `gemini-1.5-flash`
+- `gemini-1.5-pro` 💎 Most capable
 
-## Library Usage
+**Images (Imagen):**
+- `imagen-3.0-generate-001` ⭐ Latest
+- `imagegeneration@006`
+
+**Videos (Veo):**
+- `veo-001` ⭐ Google's video generation
+
+## 📚 Using as a Library
 
 Add `kalpa-core` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-kalpa-core = { git = "https://github.com/storyvis/kalpa" }
+kalpa-core = { git = "https://github.com/shaswot16/kalpa" }
 tokio = { version = "1", features = ["full"] }
 ```
 
-### Example: Text Generation with Gemini
+**Example usage:**
 
 ```rust
 use kalpa_core::{
-    providers::GeminiProvider,
-    TextGenerationProvider,
-    TextGenerationRequest,
-};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let gemini = GeminiProvider::new("your-api-key".to_string());
-
-    let request = TextGenerationRequest {
-        prompt: "Explain quantum computing briefly".to_string(),
-        model: "gemini-3.1-flash".to_string(),
-    };
-
-    let response = gemini.generate_text(&request).await?;
-    println!("{}", response.text);
-
-    Ok(())
-}
-```
-
-### Example: Image Generation with OpenAI
-
-```rust
-use kalpa_core::{
-    providers::OpenAIProvider,
+    providers::FalAIProvider,
     ImageGenerationProvider,
     ImageGenerationRequest,
 };
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let openai = OpenAIProvider::new("sk-...".to_string());
-
+    // Create provider
+    let fal = FalAIProvider::new("your-api-key".to_string());
+    
+    // Create request
     let request = ImageGenerationRequest {
         prompt: "A cyberpunk cityscape at night".to_string(),
-        model: "dall-e-3".to_string(),
+        model: "fal-ai/flux/dev".to_string(),
         size: Some("1024x1024".to_string()),
     };
-
-    let response = openai.generate_image(&request).await?;
+    
+    // Generate image
+    let response = fal.generate_image(&request).await?;
+    
+    // Get image URL
     println!("Image URL: {:?}", response.images[0].url);
-
+    
     Ok(())
 }
 ```
 
-## Architecture
+**Video generation:**
+
+```rust
+use kalpa_core::{
+    providers::FalAIProvider,
+    VideoGenerationProvider,
+    VideoGenerationRequest,
+};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let fal = FalAIProvider::new("your-api-key".to_string());
+    
+    let request = VideoGenerationRequest {
+        prompt: "Ocean waves crashing".to_string(),
+        model: "fal-ai/minimax/video-01".to_string(),
+        image_url: None,
+        duration: Some(5),
+    };
+    
+    let response = fal.generate_video(&request).await?;
+    println!("Video URL: {}", response.videos[0].url);
+    
+    Ok(())
+}
+```
+
+## 🏗️ Architecture
 
 ```
 kalpa/
 ├── crates/
-│   ├── core/           # Library: traits, types, provider implementations
-│   ├── cli/            # CLI application
+│   ├── core/           # Library: Traits, types, providers
+│   │   ├── src/
+│   │   │   ├── provider.rs      # Traits (ImageGenerationProvider, etc.)
+│   │   │   ├── providers/       # Implementations (FalAI, OpenAI, etc.)
+│   │   │   ├── types.rs         # Request/Response types
+│   │   │   ├── config.rs        # Configuration management
+│   │   │   ├── auth/            # Authentication modules
+│   │   │   └── error.rs         # Error types
+│   │   └── Cargo.toml
+│   │
+│   ├── cli/            # CLI Application
+│   │   ├── src/
+│   │   │   ├── main.rs          # Entry point
+│   │   │   └── commands/        # CLI commands
+│   │   └── Cargo.toml
+│   │
 │   └── libgen/         # Code generator from OpenAPI specs
+│       ├── specs/               # OpenAPI JSON files
+│       ├── build.rs             # Generates code at build time
+│       └── Cargo.toml
+│
 └── Cargo.toml          # Workspace definition
 ```
 
-## Configuration File
+## 🔑 Configuration File
 
-Stored at `~/.config/kalpa/config.toml`:
+Configuration is stored at `~/.config/kalpa/config.toml`:
 
 ```toml
 [defaults]
 provider = "gemini"
+format = "text"
+
+[providers.falai]
+api_key = "..."
+default_model = "fal-ai/flux/dev"
 
 [providers.openai]
 api_key = "sk-..."
@@ -253,10 +393,33 @@ api_key = "..."
 default_model = "gemini-3.1-flash"
 
 [providers.vertex]
-service_account_path = "/path/to/service-account.json"
+service_account_path = "/home/user/keys/project-key.json"
 gcs_bucket = "gs://my-bucket"
 location = "us-central1"
 default_model = "gemini-3.1-flash"
 ```
 
+## 🤝 Contributing
 
+Contributions are welcome! Feel free to:
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Submit a pull request
+
+## 📄 License
+
+MIT License - see LICENSE file for details
+
+## 🙏 Acknowledgments
+
+- Built with [progenitor](https://github.com/oxidecomputer/progenitor) for OpenAPI code generation
+- Uses [tokio](https://tokio.rs/) for async runtime
+- CLI powered by [clap](https://github.com/clap-rs/clap)
+
+## 📞 Support
+
+- 🐛 **Issues**: [GitHub Issues](https://github.com/shaswot16/kalpa/issues)
+- 📖 **Docs**: See `docs/` directory for detailed documentation
+- 💬 **Discussions**: [GitHub Discussions](https://github.com/shaswot16/kalpa/discussions)

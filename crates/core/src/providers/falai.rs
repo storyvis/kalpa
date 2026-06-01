@@ -9,11 +9,83 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::error::{KalpaError, KalpaResult};
-use crate::provider::{ImageGenerationProvider, VideoGenerationProvider};
+use crate::generation::{GenerationRequest, GenerationResponse, Part};
+use crate::provider::{
+    GenerationProvider, ImageGenerationProvider, JobHandle, PollStatus, SubmitOutcome,
+    VideoGenerationProvider,
+};
 use crate::types::{
     GeneratedImage, GeneratedVideo, ImageGenerationRequest, ImageGenerationResponse,
-    VideoGenerationRequest, VideoGenerationResponse, FalQueueSubmitResponse, FalQueueStatus,
+    VideoGenerationRequest, VideoGenerationResponse,
 };
+
+// ─── Fal-specific wire types ─────────────────────────────────────────────────
+//
+// These live here (not in `types.rs`) because they are specific to the fal.ai
+// queue protocol. They are re-exported from `crate::types` for backward compat.
+
+/// Queue submission response from fal.ai
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FalQueueSubmitResponse {
+    /// Unique request ID for tracking
+    pub request_id: String,
+    /// URL to check status
+    pub status_url: String,
+    /// URL to get final result
+    pub response_url: String,
+    /// URL to cancel the request
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancel_url: Option<String>,
+}
+
+/// Queue status response from fal.ai
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status")]
+pub enum FalQueueStatus {
+    #[serde(rename = "IN_QUEUE")]
+    InQueue {
+        queue_position: Option<u32>,
+        #[serde(default, deserialize_with = "deserialize_null_as_default")]
+        logs: Vec<FalLogEntry>,
+    },
+    #[serde(rename = "IN_PROGRESS")]
+    InProgress {
+        #[serde(default, deserialize_with = "deserialize_null_as_default")]
+        logs: Vec<FalLogEntry>,
+    },
+    #[serde(rename = "COMPLETED")]
+    Completed {
+        #[serde(default, deserialize_with = "deserialize_null_as_default")]
+        logs: Vec<FalLogEntry>,
+        response_url: Option<String>,
+    },
+    #[serde(rename = "FAILED")]
+    Failed {
+        error: String,
+        #[serde(default, deserialize_with = "deserialize_null_as_default")]
+        logs: Vec<FalLogEntry>,
+    },
+}
+
+/// Log entry from fal.ai queue
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FalLogEntry {
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+}
+
+/// Helper to deserialize null as default (empty vec)
+fn deserialize_null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    let opt = Option::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
+}
 
 /// Fal AI provider for various generative models.
 pub struct FalAIProvider {
@@ -78,29 +150,28 @@ impl FalAIProvider {
     ///
     /// # Arguments
     /// * `api_key` - Fal AI API key
-    ///
-    /// # Errors
-    /// Returns an error if the API key contains invalid header characters.
-    pub fn new(api_key: String) -> KalpaResult<Self> {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            reqwest::header::HeaderValue::from_str(&format!("Key {}", api_key))
-                .map_err(|e| KalpaError::Auth(format!("Invalid API key format: {}", e)))?,
-        );
-
+    pub fn new(api_key: String) -> Self {
+        // Create reqwest client with authentication headers
         let reqwest_client = reqwest::Client::builder()
-            .default_headers(headers)
-            .timeout(Duration::from_secs(300)) // 5 minute timeout for individual requests
+            .default_headers({
+                let mut headers = reqwest::header::HeaderMap::new();
+                headers.insert(
+                    reqwest::header::AUTHORIZATION,
+                    reqwest::header::HeaderValue::from_str(&format!("Key {}", api_key)).unwrap(),
+                );
+                headers
+            })
+            .timeout(Duration::from_secs(300)) // 5 minute timeout
             .build()
-            .map_err(|e| KalpaError::Config(format!("Failed to build HTTP client: {}", e)))?;
+            .unwrap();
 
+        // Create progenitor-generated client using the queue.fal.run base URL
         let client = falai::Client::new_with_client(
             "https://queue.fal.run",
             reqwest_client.clone(),
         );
 
-        Ok(Self { client, http_client: reqwest_client })
+        Self { client, http_client: reqwest_client }
     }
 
     /// Upload a file to Fal.ai storage and return the URL (or data URL)
@@ -400,7 +471,7 @@ impl FalAIProvider {
 #[async_trait]
 impl ImageGenerationProvider for FalAIProvider {
     fn name(&self) -> &str {
-        "falai"
+        "fal"
     }
 
     fn supported_models(&self) -> &[&str] {
@@ -451,7 +522,7 @@ impl ImageGenerationProvider for FalAIProvider {
 #[async_trait]
 impl VideoGenerationProvider for FalAIProvider {
     fn name(&self) -> &str {
-        "falai"
+        "fal"
     }
 
     fn supported_models(&self) -> &[&str] {
@@ -549,5 +620,144 @@ impl VideoGenerationProvider for FalAIProvider {
             videos,
             model: request.model.clone(),
         })
+    }
+}
+
+// ─── Unified GenerationProvider (text→image) ─────────────────────────────────
+//
+// Uses a direct queue submit/poll so the real HTTP status is visible — a `429`
+// becomes `KalpaError::RateLimited`, which the limiter turns into a decrease.
+
+impl FalAIProvider {
+    /// Direct POST to the fal queue so we can read the HTTP status (429 detection).
+    async fn submit_direct(
+        &self,
+        model_id: &str,
+        body: &serde_json::Value,
+    ) -> KalpaResult<FalQueueSubmitResponse> {
+        let resp = self
+            .http_client
+            .post(format!("https://queue.fal.run/{}", model_id))
+            .json(body)
+            .send()
+            .await?;
+        let resp = crate::http::check_response(resp, "fal").await?;
+        resp.json().await.map_err(KalpaError::from)
+    }
+
+}
+
+#[async_trait]
+impl GenerationProvider for FalAIProvider {
+    fn name(&self) -> &str {
+        "fal"
+    }
+
+    async fn submit(&self, request: &GenerationRequest) -> KalpaResult<SubmitOutcome> {
+        let model_id = request.model.split().1.to_string();
+        let prompt = request.text_prompt()?;
+        let duration = request
+            .params
+            .as_ref()
+            .and_then(|p| p.get("duration"))
+            .and_then(|v| v.as_i64())
+            .map(|d| d as i32);
+
+        // Branch on modality: video models take a video request body; an input
+        // image part (or params.image_url) selects image-to-video.
+        let body = if model_id.contains("video") {
+            let image_url = request
+                .parts
+                .iter()
+                .find_map(|p| match p {
+                    Part::Image { url: Some(u), .. } => Some(u.clone()),
+                    _ => None,
+                })
+                .or_else(|| {
+                    request
+                        .params
+                        .as_ref()
+                        .and_then(|p| p.get("image_url"))
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                });
+            match image_url {
+                Some(image_url) => serde_json::to_value(FalAIImageToVideoRequest {
+                    image_url,
+                    prompt,
+                    duration,
+                })?,
+                None => serde_json::to_value(FalAITextToVideoRequest { prompt, duration })?,
+            }
+        } else {
+            let image_size = request
+                .params
+                .as_ref()
+                .and_then(|p| p.get("size"))
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            serde_json::to_value(FalAITextToImageRequest {
+                prompt,
+                image_size,
+                num_images: Some(1),
+            })?
+        };
+
+        let submit = self.submit_direct(&model_id, &body).await?;
+        Ok(SubmitOutcome::Async(JobHandle {
+            provider_request_id: submit.request_id,
+            poll_url: Some(submit.status_url),
+            response_url: Some(submit.response_url),
+        }))
+    }
+
+    async fn poll(&self, handle: &JobHandle) -> KalpaResult<PollStatus> {
+        let poll_url = handle.poll_url.as_deref().ok_or_else(|| KalpaError::ProviderError {
+            status: 500,
+            message: "fal job handle missing poll_url".into(),
+        })?;
+
+        match self.queue_status_by_url(poll_url).await? {
+            FalQueueStatus::InQueue { queue_position, .. } => {
+                Ok(PollStatus::InQueue { position: queue_position })
+            }
+            FalQueueStatus::InProgress { .. } => Ok(PollStatus::InProgress),
+            FalQueueStatus::Failed { error, .. } => Ok(PollStatus::Failed(error)),
+            FalQueueStatus::Completed { .. } => {
+                let response_url = handle.response_url.as_deref().ok_or_else(|| {
+                    KalpaError::ProviderError {
+                        status: 500,
+                        message: "fal job handle missing response_url".into(),
+                    }
+                })?;
+                let result_json = self.queue_result_by_url(response_url).await?;
+                // Parse generically: image responses carry `images[]`; video
+                // responses carry `video` or `videos[]`.
+                let mut parts = Vec::new();
+                if let Ok(images) = serde_json::from_value::<FalAIImageResponse>(result_json.clone()) {
+                    parts.extend(images.images.into_iter().map(|img| Part::Image {
+                        url: Some(img.url),
+                        b64_data: None,
+                        mime: None,
+                    }));
+                }
+                if parts.is_empty() {
+                    if let Ok(video) = serde_json::from_value::<FalAIVideoResponse>(result_json) {
+                        if let Some(v) = video.video {
+                            parts.push(Part::Video { url: v.url, mime: Some("video/mp4".into()) });
+                        }
+                        parts.extend(video.videos.into_iter().map(|v| Part::Video {
+                            url: v.url,
+                            mime: Some("video/mp4".into()),
+                        }));
+                    }
+                }
+                Ok(PollStatus::Completed(GenerationResponse {
+                    model: handle.provider_request_id.clone(),
+                    parts,
+                    usage: None,
+                }))
+            }
+        }
     }
 }

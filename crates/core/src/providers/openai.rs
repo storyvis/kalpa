@@ -3,7 +3,12 @@
 use async_trait::async_trait;
 use kalpa_libgen::openai;
 use crate::error::{KalpaError, KalpaResult};
-use crate::provider::{CompletionProvider, ImageGenerationProvider};
+use crate::generation::{GenerationRequest, GenerationResponse, Part};
+use crate::http::check_response;
+use crate::provider::{
+    CompletionProvider, GenerationProvider, ImageGenerationProvider, JobHandle, PollStatus,
+    SubmitOutcome,
+};
 use crate::types::{
     CompletionRequest, CompletionResponse, ImageGenerationRequest, ImageGenerationResponse,
     GeneratedImage, Message, Role, Usage,
@@ -12,6 +17,9 @@ use crate::types::{
 /// OpenAI provider for GPT models, DALL-E, and Sora.
 pub struct OpenAIProvider {
     client: openai::Client,
+    /// Authenticated raw client for endpoints the generated client lacks
+    /// (audio speech / transcriptions).
+    http: reqwest::Client,
 }
 
 impl OpenAIProvider {
@@ -19,25 +27,23 @@ impl OpenAIProvider {
     ///
     /// # Arguments
     /// * `api_key` - OpenAI API key
-    ///
-    /// # Errors
-    /// Returns an error if the API key contains invalid header characters.
-    pub fn new(api_key: String) -> KalpaResult<Self> {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", api_key))
-                .map_err(|e| KalpaError::Auth(format!("Invalid API key format: {}", e)))?,
-        );
-
-        let http_client = reqwest::Client::builder()
-            .default_headers(headers)
+    pub fn new(api_key: String) -> Self {
+        let http = reqwest::Client::builder()
+            .default_headers({
+                let mut headers = reqwest::header::HeaderMap::new();
+                headers.insert(
+                    reqwest::header::AUTHORIZATION,
+                    reqwest::header::HeaderValue::from_str(&format!("Bearer {}", api_key))
+                        .unwrap(),
+                );
+                headers
+            })
             .build()
-            .map_err(|e| KalpaError::Config(format!("Failed to build HTTP client: {}", e)))?;
+            .unwrap();
 
-        let client = openai::Client::new_with_client("https://api.openai.com", http_client);
+        let client = openai::Client::new_with_client("https://api.openai.com", http.clone());
 
-        Ok(Self { client })
+        Self { client, http }
     }
 
     /// Convert kalpa Message to OpenAI Message
@@ -199,6 +205,166 @@ impl ImageGenerationProvider for OpenAIProvider {
         Ok(ImageGenerationResponse {
             images,
             model: request.model.clone(),
+        })
+    }
+}
+
+// ─── Unified GenerationProvider ──────────────────────────────────────────────
+//
+// dall-e / gpt-image models → image (sync, url or b64 parts); other models →
+// chat (sync, text part).
+
+
+#[async_trait]
+impl GenerationProvider for OpenAIProvider {
+    fn name(&self) -> &str {
+        "openai"
+    }
+
+    async fn submit(&self, request: &GenerationRequest) -> KalpaResult<SubmitOutcome> {
+        let model = request.model.split().1.to_string();
+        let prompt = request.text_prompt()?;
+
+        if model.contains("dall-e") || model.contains("gpt-image") {
+            let img_req = ImageGenerationRequest {
+                model: model.clone(),
+                prompt,
+                n: Some(1),
+                size: request
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("size"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+            };
+            let resp = self.generate_image(&img_req).await?;
+            let parts = resp
+                .images
+                .into_iter()
+                .map(|img| Part::Image {
+                    url: img.url,
+                    b64_data: img.b64_data,
+                    mime: Some("image/png".into()),
+                })
+                .collect();
+            Ok(SubmitOutcome::Sync(GenerationResponse { model, parts, usage: None }))
+        } else {
+            let comp_req = CompletionRequest {
+                model: model.clone(),
+                messages: vec![Message { role: Role::User, content: prompt }],
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                stop_sequences: None,
+            };
+            let resp = self.complete(&comp_req).await?;
+            Ok(SubmitOutcome::Sync(GenerationResponse {
+                model,
+                parts: vec![Part::Text { text: resp.content }],
+                usage: resp.usage,
+            }))
+        }
+    }
+
+    async fn poll(&self, _handle: &JobHandle) -> KalpaResult<PollStatus> {
+        Err(KalpaError::Other("openai generation is synchronous; poll not supported".into()))
+    }
+}
+
+// ─── Audio: TTS (speech) + STT (transcription) ───────────────────────────────
+//
+// The generated client lacks audio endpoints, so these call the REST API
+// directly with the authenticated `http` client.
+
+use crate::generation::{SpeechRequest, TranscriptionRequest};
+use crate::provider::{SpeechProvider, TranscriptionProvider};
+
+#[async_trait]
+impl SpeechProvider for OpenAIProvider {
+    fn name(&self) -> &str {
+        "openai"
+    }
+
+    async fn synthesize(&self, request: &SpeechRequest) -> KalpaResult<GenerationResponse> {
+        let model = request.model.split().1.to_string();
+        let format = request.format.clone().unwrap_or_else(|| "mp3".into());
+        let body = serde_json::json!({
+            "model": model,
+            "input": request.input,
+            "voice": request.voice.clone().unwrap_or_else(|| "alloy".into()),
+            "response_format": format,
+        });
+
+        let resp = self
+            .http
+            .post("https://api.openai.com/v1/audio/speech")
+            .json(&body)
+            .send()
+            .await?;
+        let resp = check_response(resp, "openai").await?;
+
+        use base64::Engine;
+        let bytes = resp.bytes().await?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let mime = match format.as_str() {
+            "wav" => "audio/wav",
+            "opus" => "audio/opus",
+            "aac" => "audio/aac",
+            "flac" => "audio/flac",
+            _ => "audio/mpeg",
+        };
+
+        Ok(GenerationResponse {
+            model,
+            parts: vec![Part::Audio {
+                url: None,
+                b64_data: Some(b64),
+                mime: Some(mime.into()),
+            }],
+            usage: None,
+        })
+    }
+}
+
+#[async_trait]
+impl TranscriptionProvider for OpenAIProvider {
+    fn name(&self) -> &str {
+        "openai"
+    }
+
+    async fn transcribe(&self, request: &TranscriptionRequest) -> KalpaResult<GenerationResponse> {
+        let model = request.model.split().1.to_string();
+
+        // Fetch the audio bytes (uploaded/stored separately, referenced by URL).
+        let audio = reqwest::get(&request.audio_url).await?.bytes().await?;
+
+        let mut form = reqwest::multipart::Form::new()
+            .text("model", model.clone())
+            .part(
+                "file",
+                reqwest::multipart::Part::bytes(audio.to_vec()).file_name("audio"),
+            );
+        if let Some(lang) = &request.language {
+            form = form.text("language", lang.clone());
+        }
+
+        let resp = self
+            .http
+            .post("https://api.openai.com/v1/audio/transcriptions")
+            .multipart(form)
+            .send()
+            .await?;
+        let resp = check_response(resp, "openai").await?;
+
+        #[derive(serde::Deserialize)]
+        struct TranscriptionResponse {
+            text: String,
+        }
+        let parsed: TranscriptionResponse = resp.json().await?;
+        Ok(GenerationResponse {
+            model,
+            parts: vec![Part::Text { text: parsed.text }],
+            usage: None,
         })
     }
 }

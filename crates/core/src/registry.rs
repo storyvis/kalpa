@@ -1,178 +1,302 @@
-//! Model registry — single source of truth for supported models per provider/content type.
+//! Model registry: logical models and their per-provider bindings.
 //!
-//! Eliminates model list duplication across provider implementations and CLI commands.
+//! A *logical model* (`flux-dev`) is the stable, user-facing capability with a
+//! provider-neutral param contract. A *binding* is one concrete provider offering
+//! of it (`fal` + `fal-ai/flux/dev`). The same logical model can have several
+//! bindings; the registry resolves a [`ModelRef`] to one binding — pinned
+//! (`provider:slug`) or selected by priority (logical slug).
+//!
+//! For now the catalog is seeded statically via [`Registry::with_defaults`]; in
+//! svstudio it is built from the `models` / `model_providers` tables.
 
-use crate::config::Provider;
+use serde::Serialize;
 
-/// Content type for generation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContentKind {
-    Text,
-    Image,
-    Video,
+use crate::error::{KalpaError, KalpaResult};
+use crate::generation::{Modality, ModelRef};
+
+/// A logical model: the capability and its provider-neutral contract.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelInfo {
+    /// Logical slug, e.g. "flux-dev".
+    pub slug: String,
+    /// Human-readable name.
+    pub display_name: String,
+    /// svid generation tags (72-86) this model can serve.
+    pub supported_gen_types: Vec<u8>,
+    /// Modalities accepted as input.
+    pub input_modalities: Vec<Modality>,
+    /// Modalities this model can emit (may be several).
+    pub output_modalities: Vec<Modality>,
+    /// Provider offerings of this model.
+    pub bindings: Vec<Binding>,
 }
 
-/// Model entry with metadata.
+/// One concrete provider offering of a logical model.
+#[derive(Debug, Clone, Serialize)]
+pub struct Binding {
+    /// Provider name, e.g. "fal".
+    pub provider: String,
+    /// Provider-specific slug, e.g. "fal-ai/flux/dev".
+    pub provider_slug: String,
+    /// Optional region (e.g. a Vertex location).
+    pub region: Option<String>,
+    /// Whether this binding is queue-based (no synchronous result).
+    pub async_only: bool,
+    /// Selection order when the model is unpinned (lower = preferred).
+    pub priority: i32,
+}
+
+/// A resolved model reference: the logical model plus the chosen binding.
 #[derive(Debug, Clone)]
-pub struct ModelEntry {
-    pub id: &'static str,
-    pub is_default: bool,
+pub struct Resolved {
+    pub model_slug: String,
+    pub binding: Binding,
 }
 
-impl ModelEntry {
-    const fn new(id: &'static str) -> Self {
-        Self { id, is_default: false }
+/// The model catalog.
+#[derive(Debug, Clone, Default)]
+pub struct Registry {
+    models: Vec<ModelInfo>,
+}
+
+impl Registry {
+    /// Build a registry from a catalog of logical models.
+    pub fn new(models: Vec<ModelInfo>) -> Self {
+        Self { models }
     }
 
-    const fn default_model(id: &'static str) -> Self {
-        Self { id, is_default: true }
+    /// A small static catalog used by the CLI and early milestones.
+    pub fn with_defaults() -> Self {
+        let fal = |slug: &str| Binding {
+            provider: "fal".into(),
+            provider_slug: slug.into(),
+            region: None,
+            async_only: true,
+            priority: 100,
+        };
+        let gemini = |slug: &str| Binding {
+            provider: "gemini".into(),
+            provider_slug: slug.into(),
+            region: None,
+            async_only: false,
+            priority: 100,
+        };
+        let vertex = |slug: &str| Binding {
+            provider: "vertex".into(),
+            provider_slug: slug.into(),
+            region: Some("us-central1".into()),
+            async_only: false,
+            priority: 200,
+        };
+
+        Self::new(vec![
+            ModelInfo {
+                slug: "flux-dev".into(),
+                display_name: "FLUX.1 [dev]".into(),
+                supported_gen_types: vec![73], // t2i
+                input_modalities: vec![Modality::Text],
+                output_modalities: vec![Modality::Image],
+                bindings: vec![fal("fal-ai/flux/dev")],
+            },
+            // Nano Banana Pro: multimodal in, interleaved text+image out.
+            ModelInfo {
+                slug: "gemini-3-pro-image".into(),
+                display_name: "Gemini 3 Pro Image (Nano Banana Pro)".into(),
+                supported_gen_types: vec![73, 72, 78], // t2i, t2t, i2i
+                input_modalities: vec![Modality::Text, Modality::Image],
+                output_modalities: vec![Modality::Image, Modality::Text],
+                bindings: vec![gemini("gemini-3-pro-image-preview")],
+            },
+            ModelInfo {
+                slug: "gemini-2.5-flash".into(),
+                display_name: "Gemini 2.5 Flash".into(),
+                supported_gen_types: vec![72], // t2t
+                input_modalities: vec![Modality::Text, Modality::Image],
+                output_modalities: vec![Modality::Text],
+                bindings: vec![gemini("gemini-2.5-flash")],
+            },
+            // Imagen on Vertex (b64 image output).
+            ModelInfo {
+                slug: "imagen-4".into(),
+                display_name: "Imagen 4".into(),
+                supported_gen_types: vec![73], // t2i
+                input_modalities: vec![Modality::Text],
+                output_modalities: vec![Modality::Image],
+                bindings: vec![vertex("imagen-4.0-generate-001")],
+            },
+            // OpenAI DALL-E 3 (image).
+            ModelInfo {
+                slug: "dall-e-3".into(),
+                display_name: "DALL·E 3".into(),
+                supported_gen_types: vec![73], // t2i
+                input_modalities: vec![Modality::Text],
+                output_modalities: vec![Modality::Image],
+                bindings: vec![Binding {
+                    provider: "openai".into(),
+                    provider_slug: "dall-e-3".into(),
+                    region: None,
+                    async_only: false,
+                    priority: 100,
+                }],
+            },
+            // OpenAI GPT-4.1 (text).
+            ModelInfo {
+                slug: "gpt-4.1".into(),
+                display_name: "GPT-4.1".into(),
+                supported_gen_types: vec![72], // t2t
+                input_modalities: vec![Modality::Text, Modality::Image],
+                output_modalities: vec![Modality::Text],
+                bindings: vec![Binding {
+                    provider: "openai".into(),
+                    provider_slug: "gpt-4.1".into(),
+                    region: None,
+                    async_only: false,
+                    priority: 100,
+                }],
+            },
+            // Anthropic Claude Sonnet (text).
+            ModelInfo {
+                slug: "claude-sonnet".into(),
+                display_name: "Claude Sonnet 4.6".into(),
+                supported_gen_types: vec![72], // t2t
+                input_modalities: vec![Modality::Text, Modality::Image],
+                output_modalities: vec![Modality::Text],
+                bindings: vec![Binding {
+                    provider: "claude".into(),
+                    provider_slug: "claude-sonnet-4-6".into(),
+                    region: None,
+                    async_only: false,
+                    priority: 100,
+                }],
+            },
+            // Fal MiniMax video (text→video / image→video).
+            ModelInfo {
+                slug: "minimax-video".into(),
+                display_name: "MiniMax Video 01".into(),
+                supported_gen_types: vec![74, 79], // t2v, i2v
+                input_modalities: vec![Modality::Text, Modality::Image],
+                output_modalities: vec![Modality::Video],
+                bindings: vec![fal("fal-ai/minimax/video-01")],
+            },
+            // OpenAI TTS (text→speech).
+            ModelInfo {
+                slug: "tts-1".into(),
+                display_name: "OpenAI TTS".into(),
+                supported_gen_types: vec![75], // t2s
+                input_modalities: vec![Modality::Text],
+                output_modalities: vec![Modality::Audio],
+                bindings: vec![Binding {
+                    provider: "openai".into(),
+                    provider_slug: "tts-1".into(),
+                    region: None,
+                    async_only: false,
+                    priority: 100,
+                }],
+            },
+            // OpenAI Whisper (speech→text).
+            ModelInfo {
+                slug: "whisper-1".into(),
+                display_name: "OpenAI Whisper".into(),
+                supported_gen_types: vec![84], // s2t
+                input_modalities: vec![Modality::Audio],
+                output_modalities: vec![Modality::Text],
+                bindings: vec![Binding {
+                    provider: "openai".into(),
+                    provider_slug: "whisper-1".into(),
+                    region: None,
+                    async_only: false,
+                    priority: 100,
+                }],
+            },
+        ])
+    }
+
+    /// Resolve a [`ModelRef`] to a concrete binding.
+    ///
+    /// - Pinned `"provider:provider_slug"` → that exact binding.
+    /// - Logical `"slug"` → lowest-`priority` binding of the matching model.
+    pub fn resolve(&self, model: &ModelRef) -> KalpaResult<Resolved> {
+        let (provider, slug) = model.split();
+        match provider {
+            Some(prov) => self
+                .models
+                .iter()
+                .find_map(|m| {
+                    m.bindings
+                        .iter()
+                        .find(|b| b.provider == prov && b.provider_slug == slug)
+                        .map(|b| Resolved {
+                            model_slug: m.slug.clone(),
+                            binding: b.clone(),
+                        })
+                })
+                .ok_or_else(|| {
+                    KalpaError::Config(format!("No binding for pinned model '{}'", model.0))
+                }),
+            None => {
+                let m = self
+                    .models
+                    .iter()
+                    .find(|m| m.slug == slug)
+                    .ok_or_else(|| KalpaError::Config(format!("Unknown model '{}'", slug)))?;
+                let binding = m
+                    .bindings
+                    .iter()
+                    .min_by_key(|b| b.priority)
+                    .ok_or_else(|| {
+                        KalpaError::Config(format!("Model '{}' has no provider bindings", slug))
+                    })?;
+                Ok(Resolved {
+                    model_slug: m.slug.clone(),
+                    binding: binding.clone(),
+                })
+            }
+        }
+    }
+
+    /// List logical models that can emit the given output modality.
+    pub fn list(&self, modality: Modality) -> Vec<&ModelInfo> {
+        self.models
+            .iter()
+            .filter(|m| m.output_modalities.contains(&modality))
+            .collect()
+    }
+
+    /// All logical models.
+    pub fn models(&self) -> &[ModelInfo] {
+        &self.models
     }
 }
 
-/// Get all supported models for a provider/content-type combination.
-/// This is the single source of truth — providers and CLI both use this.
-pub fn supported_models(provider: Provider, kind: ContentKind) -> &'static [ModelEntry] {
-    match (provider, kind) {
-        // --- Gemini ---
-        (Provider::Gemini, ContentKind::Text) => &[
-            ModelEntry::default_model("gemini-2.5-flash"),
-            ModelEntry::new("gemini-2.0-flash"),
-            ModelEntry::new("gemini-2.0-flash-exp"),
-            ModelEntry::new("gemini-1.5-pro"),
-            ModelEntry::new("gemini-1.5-flash"),
-        ],
-        (Provider::Gemini, ContentKind::Image) => &[
-            ModelEntry::default_model("gemini-2.5-flash"),
-        ],
-        (Provider::Gemini, ContentKind::Video) => &[
-            ModelEntry::default_model("gemini-2.5-flash"),
-        ],
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        // --- Vertex AI ---
-        (Provider::Vertex, ContentKind::Text) => &[
-            ModelEntry::new("gemini-3.1-flash"),
-            ModelEntry::new("gemini-3-pro"),
-            ModelEntry::default_model("gemini-2.5-flash"),
-            ModelEntry::new("gemini-2.0-flash"),
-            ModelEntry::new("gemini-2.0-flash-exp"),
-            ModelEntry::new("gemini-1.5-pro"),
-            ModelEntry::new("gemini-1.5-flash"),
-        ],
-        (Provider::Vertex, ContentKind::Image) => &[
-            ModelEntry::default_model("imagen-4.0-generate-001"),
-            ModelEntry::new("imagen-3.0-generate-001"),
-            ModelEntry::new("imagen-3.0-generate-002"),
-            ModelEntry::new("imagen-3.0-fast-generate-001"),
-        ],
-        (Provider::Vertex, ContentKind::Video) => &[
-            ModelEntry::new("veo-3.0-generate"),
-            ModelEntry::new("veo-3.0-fast-generate-preview"),
-            ModelEntry::default_model("veo-2.0-generate-001"),
-        ],
+    #[test]
+    fn resolve_logical_and_pinned() {
+        let reg = Registry::with_defaults();
 
-        // --- OpenAI ---
-        (Provider::OpenAI, ContentKind::Text) => &[
-            ModelEntry::default_model("gpt-4.1"),
-            ModelEntry::new("gpt-4.1-mini"),
-            ModelEntry::new("gpt-4.1-preview"),
-            ModelEntry::new("gpt-4"),
-            ModelEntry::new("gpt-4-turbo"),
-            ModelEntry::new("gpt-4-turbo-preview"),
-            ModelEntry::new("gpt-3.5-turbo"),
-            ModelEntry::new("gpt-3.5-turbo-16k"),
-        ],
-        (Provider::OpenAI, ContentKind::Image) => &[
-            ModelEntry::default_model("dall-e-3"),
-            ModelEntry::new("dall-e-2"),
-            ModelEntry::new("gpt-image-1.5"),
-        ],
-        (Provider::OpenAI, ContentKind::Video) => &[],
+        let r = reg.resolve(&"flux-dev".into()).unwrap();
+        assert_eq!(r.binding.provider, "fal");
+        assert_eq!(r.binding.provider_slug, "fal-ai/flux/dev");
 
-        // --- Claude ---
-        (Provider::Claude, ContentKind::Text) => &[
-            ModelEntry::new("claude-opus-4-7"),
-            ModelEntry::new("claude-opus-4-6"),
-            ModelEntry::default_model("claude-sonnet-4-6"),
-            ModelEntry::new("claude-haiku-4-5-20251001"),
-            ModelEntry::new("claude-3-opus"),
-            ModelEntry::new("claude-3-sonnet"),
-            ModelEntry::new("claude-3-haiku"),
-        ],
-        (Provider::Claude, ContentKind::Image) => &[],
-        (Provider::Claude, ContentKind::Video) => &[],
+        let r = reg.resolve(&"fal:fal-ai/flux/dev".into()).unwrap();
+        assert_eq!(r.model_slug, "flux-dev");
 
-        // --- Fal.ai ---
-        (Provider::Fal, ContentKind::Text) => &[],
-        (Provider::Fal, ContentKind::Image) => &[
-            ModelEntry::new("fal-ai/flux/dev"),
-            ModelEntry::new("fal-ai/flux/schnell"),
-            ModelEntry::new("fal-ai/flux-pro"),
-            ModelEntry::new("fal-ai/flux-realism"),
-            ModelEntry::new("fal-ai/recraft-v3"),
-            ModelEntry::new("fal-ai/aura-flow"),
-            ModelEntry::new("fal-ai/stable-diffusion-v3-medium"),
-            ModelEntry::default_model("fal-ai/fast-sdxl"),
-        ],
-        (Provider::Fal, ContentKind::Video) => &[
-            // Text-to-Video
-            ModelEntry::new("fal-ai/minimax/video-01"),
-            ModelEntry::new("fal-ai/minimax/video-01-live"),
-            ModelEntry::new("fal-ai/hunyuan-video"),
-            ModelEntry::new("fal-ai/mochi-v1"),
-            ModelEntry::default_model("fal-ai/kling-video/v1/standard/text-to-video"),
-            ModelEntry::new("fal-ai/kling-video/v1.5/standard/text-to-video"),
-            ModelEntry::new("fal-ai/kling-video/v1.6/standard/text-to-video"),
-            ModelEntry::new("fal-ai/kling-video/v2.1/master/text-to-video"),
-            ModelEntry::new("fal-ai/kling-video/v2.6/pro/text-to-video"),
-            ModelEntry::new("fal-ai/wan/v2.2-a14b/text-to-video"),
-            ModelEntry::new("fal-ai/ltx-2/text-to-video"),
-            ModelEntry::new("fal-ai/ltx-2.3/text-to-video"),
-            ModelEntry::new("fal-ai/veo3"),
-            ModelEntry::new("fal-ai/veo3.1"),
-            ModelEntry::new("bytedance/seedance-2.0/text-to-video"),
-            ModelEntry::new("bytedance/seedance-2.0/fast/text-to-video"),
-            // Image-to-Video
-            ModelEntry::new("fal-ai/veo2/image-to-video"),
-            ModelEntry::new("fal-ai/veo3/image-to-video"),
-            ModelEntry::new("fal-ai/luma-dream-machine/image-to-video"),
-            ModelEntry::new("fal-ai/kling-video/v2.1/master/image-to-video"),
-            ModelEntry::new("fal-ai/kling-video/v1.6/pro/image-to-video"),
-            ModelEntry::new("fal-ai/minimax/video-01-live/image-to-video"),
-            ModelEntry::new("fal-ai/pixverse/v4.5/image-to-video"),
-            ModelEntry::new("bytedance/seedance-2.0/image-to-video"),
-            // Legacy
-            ModelEntry::new("fal-ai/kling-video/v1/standard/image-to-video"),
-            ModelEntry::new("fal-ai/kling-video/v1.5/standard/image-to-video"),
-            ModelEntry::new("fal-ai/minimax/video-01/image-to-video"),
-            ModelEntry::new("fal-ai/wan/v2.2-a14b/image-to-video"),
-            ModelEntry::new("fal-ai/luma-dream-machine"),
-        ],
+        assert!(reg.resolve(&"nope".into()).is_err());
+        assert!(reg.resolve(&"fal:does/not/exist".into()).is_err());
     }
-}
 
-/// Get model IDs as a simple string slice (for trait implementations).
-pub fn model_ids(provider: Provider, kind: ContentKind) -> Vec<&'static str> {
-    supported_models(provider, kind).iter().map(|m| m.id).collect()
-}
-
-/// Get the default model for a provider/content-type.
-pub fn default_model(provider: Provider, kind: ContentKind) -> Option<&'static str> {
-    supported_models(provider, kind)
-        .iter()
-        .find(|m| m.is_default)
-        .map(|m| m.id)
-}
-
-/// Check if a model is supported for the given provider/content-type.
-pub fn is_model_supported(provider: Provider, kind: ContentKind, model: &str) -> bool {
-    supported_models(provider, kind).iter().any(|m| m.id == model)
-}
-
-/// Get providers that support a given content kind.
-pub fn providers_for_kind(kind: ContentKind) -> Vec<(Provider, &'static str)> {
-    Provider::all()
-        .iter()
-        .filter(|p| !supported_models(**p, kind).is_empty())
-        .map(|p| (*p, p.as_str()))
-        .collect()
+    #[test]
+    fn list_by_modality() {
+        let reg = Registry::with_defaults();
+        // flux-dev, gemini-3-pro-image, imagen-4, dall-e-3 emit images.
+        assert_eq!(reg.list(Modality::Image).len(), 4);
+        // minimax-video emits video.
+        assert_eq!(reg.list(Modality::Video).len(), 1);
+        // gemini-3-pro-image, gemini-2.5-flash, gpt-4.1, claude-sonnet, whisper-1 emit text.
+        assert_eq!(reg.list(Modality::Text).len(), 5);
+        // tts-1 emits audio.
+        assert_eq!(reg.list(Modality::Audio).len(), 1);
+    }
 }

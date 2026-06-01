@@ -2,8 +2,7 @@
 
 use clap::Args;
 use colored::Colorize;
-use kalpa_core::registry::{self, ContentKind};
-use kalpa_core::Provider;
+use kalpa_core::provider::{CompletionProvider, ImageGenerationProvider, VideoGenerationProvider};
 
 /// Arguments for the `models` subcommand.
 #[derive(Debug, Args)]
@@ -39,43 +38,37 @@ pub struct ModelsArgs {
 
 /// Execute the models command.
 pub async fn execute(args: ModelsArgs, json: bool) -> anyhow::Result<()> {
+    use kalpa_core::providers::{FalAIProvider, OpenAIProvider};
+
     // Determine which providers to show
     let show_all = !args.gemini && !args.vertex && !args.fal && !args.openai && !args.claude;
 
     if json {
-        // JSON output — use registry as single source of truth
+        // JSON output
         let mut providers_data = serde_json::Map::new();
 
-        let providers_to_show: Vec<Provider> = if show_all {
-            Provider::all().to_vec()
-        } else {
-            let mut v = Vec::new();
-            if args.gemini { v.push(Provider::Gemini); }
-            if args.vertex { v.push(Provider::Vertex); }
-            if args.fal { v.push(Provider::Fal); }
-            if args.openai { v.push(Provider::OpenAI); }
-            if args.claude { v.push(Provider::Claude); }
-            v
-        };
+        if show_all || args.fal {
+            let fal = FalAIProvider::new("dummy".to_string());
+            providers_data.insert(
+                "fal".to_string(),
+                serde_json::json!({
+                    "name": "Fal.ai",
+                    "image_models": <FalAIProvider as ImageGenerationProvider>::supported_models(&fal),
+                    "video_models": <FalAIProvider as VideoGenerationProvider>::supported_models(&fal),
+                }),
+            );
+        }
 
-        for provider in providers_to_show {
-            let text_models = registry::model_ids(provider, ContentKind::Text);
-            let image_models = registry::model_ids(provider, ContentKind::Image);
-            let video_models = registry::model_ids(provider, ContentKind::Video);
-
-            let mut entry = serde_json::Map::new();
-            entry.insert("name".into(), serde_json::json!(provider.display_name()));
-            if !text_models.is_empty() {
-                entry.insert("text_models".into(), serde_json::json!(text_models));
-            }
-            if !image_models.is_empty() {
-                entry.insert("image_models".into(), serde_json::json!(image_models));
-            }
-            if !video_models.is_empty() {
-                entry.insert("video_models".into(), serde_json::json!(video_models));
-            }
-
-            providers_data.insert(provider.as_str().to_string(), serde_json::Value::Object(entry));
+        if show_all || args.openai {
+            let openai = OpenAIProvider::new("dummy".to_string());
+            providers_data.insert(
+                "openai".to_string(),
+                serde_json::json!({
+                    "name": "OpenAI",
+                    "image_models": <OpenAIProvider as ImageGenerationProvider>::supported_models(&openai),
+                    "chat_models": <OpenAIProvider as CompletionProvider>::supported_models(&openai),
+                }),
+            );
         }
 
         println!("{}", serde_json::to_string_pretty(&providers_data)?);
@@ -178,35 +171,41 @@ fn print_fal_models() {
 }
 
 fn print_openai_models() {
+    use kalpa_core::providers::OpenAIProvider;
+    
+    let openai = OpenAIProvider::new("dummy".to_string());
+    
     println!("  {} {}", "🤖".bright_yellow(), "OpenAI".bold().white());
     println!();
     
     println!("    {} Image Models", "📸".bright_green());
-    for model in registry::model_ids(Provider::OpenAI, ContentKind::Image) {
-        let desc = match model {
-            "dall-e-3" => "⭐ Latest, highest quality",
-            "dall-e-2" => "Classic version",
-            _ => "",
-        };
-        if desc.is_empty() {
-            println!("      • {}", model.dimmed());
-        } else {
-            println!("      • {} {}", model.cyan(), desc.bright_black());
+    for model in <OpenAIProvider as ImageGenerationProvider>::supported_models(&openai) {
+        if model.contains("dall-e") {
+            let desc = match *model {
+                "dall-e-3" => "⭐ Latest, highest quality",
+                "dall-e-2" => "Classic version",
+                _ => "",
+            };
+            if desc.is_empty() {
+                println!("      • {}", model.dimmed());
+            } else {
+                println!("      • {} {}", model.cyan(), desc.bright_black());
+            }
         }
     }
     
     println!();
     println!("    {} Text/Chat Models", "💬".bright_green());
-    for model in registry::model_ids(Provider::OpenAI, ContentKind::Text) {
-        let desc = match model {
-            "gpt-4.1" => "⭐ Latest GPT-4 Turbo",
-            "gpt-4.1-mini" => "⚡ Fast and affordable",
-            _ => "",
-        };
-        if desc.is_empty() {
-            println!("      • {}", model.dimmed());
+    for model in &[
+        ("gpt-4.1", "⭐ Latest GPT-4 Turbo"),
+        ("gpt-4.1-mini", "⚡ Fast and affordable"),
+        ("gpt-4", ""),
+        ("gpt-3.5-turbo", ""),
+    ] {
+        if model.1.is_empty() {
+            println!("      • {}", model.0.dimmed());
         } else {
-            println!("      • {} {}", model.cyan(), desc.bright_black());
+            println!("      • {} {}", model.0.cyan(), model.1.bright_black());
         }
     }
     println!();

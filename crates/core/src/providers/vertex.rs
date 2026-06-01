@@ -6,7 +6,11 @@ use tracing::{info, instrument};
 use uuid::Uuid;
 
 use crate::error::{KalpaError, KalpaResult};
-use crate::provider::{CompletionProvider, ImageGenerationProvider, VideoGenerationProvider};
+use crate::generation::{GenerationRequest, GenerationResponse, Part};
+use crate::provider::{
+    CompletionProvider, GenerationProvider, ImageGenerationProvider, JobHandle, PollStatus,
+    SubmitOutcome, VideoGenerationProvider,
+};
 use crate::types::{
     CompletionRequest, CompletionResponse, ImageGenerationRequest, ImageGenerationResponse,
     GeneratedImage, GeneratedVideo, Message, Role, Usage, VideoGenerationRequest,
@@ -18,8 +22,6 @@ use tokio::time::sleep;
 /// Vertex AI provider for Gemini models, Imagen, and Veo.
 pub struct VertexProvider {
     client: vertex::Client,
-    /// Shared HTTP client for direct API calls (GCS, polling).
-    http_client: reqwest::Client,
     project_id: String,
     location: String,
     bearer_token: String,
@@ -34,33 +36,31 @@ impl VertexProvider {
     /// * `project_id` - Google Cloud project ID
     /// * `location` - Cloud region (e.g., "us-central1")
     /// * `gcs_bucket` - Optional GCS bucket for outputs (e.g., "gs://my-bucket")
-    ///
-    /// # Errors
-    /// Returns an error if the bearer token contains invalid header characters.
-    pub fn new(bearer_token: String, project_id: String, location: String, gcs_bucket: Option<String>) -> KalpaResult<Self> {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", bearer_token))
-                .map_err(|e| KalpaError::Auth(format!("Invalid bearer token format: {}", e)))?,
+    pub fn new(bearer_token: String, project_id: String, location: String, gcs_bucket: Option<String>) -> Self {
+        let base_url = format!("https://{}-aiplatform.googleapis.com", location);
+        let client = vertex::Client::new_with_client(
+            &base_url,
+            reqwest::Client::builder()
+                .default_headers({
+                    let mut headers = reqwest::header::HeaderMap::new();
+                    headers.insert(
+                        reqwest::header::AUTHORIZATION,
+                        reqwest::header::HeaderValue::from_str(&format!("Bearer {}", bearer_token))
+                            .unwrap(),
+                    );
+                    headers
+                })
+                .build()
+                .unwrap(),
         );
 
-        let http_client = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()
-            .map_err(|e| KalpaError::Config(format!("Failed to build HTTP client: {}", e)))?;
-
-        let base_url = format!("https://{}-aiplatform.googleapis.com", location);
-        let client = vertex::Client::new_with_client(&base_url, http_client.clone());
-
-        Ok(Self {
+        Self {
             client,
-            http_client,
             project_id,
             location,
             bearer_token,
             gcs_bucket,
-        })
+        }
     }
 
     /// Convert kalpa Message to Vertex Content
@@ -326,6 +326,7 @@ impl VideoGenerationProvider for VertexProvider {
 
         // STEP 2: Veo 2.0 requires a GCS storageUri with request_id for output videos
         // Extract bucket name from configured gcs_bucket
+        let fallback_bucket;
         let bucket_name = if let Some(gcs_uri) = &self.gcs_bucket {
             // Parse "gs://bucket-name/path" to get "bucket-name"
             gcs_uri.strip_prefix("gs://")
@@ -336,7 +337,8 @@ impl VideoGenerationProvider for VertexProvider {
                 })?
         } else {
             // Fallback bucket name
-            &format!("{}-kalpa-videos", self.project_id)
+            fallback_bucket = format!("{}-kalpa-videos", self.project_id);
+            fallback_bucket.as_str()
         };
         
         // Construct storage URI with request_id
@@ -407,8 +409,10 @@ impl VertexProvider {
             bucket_name, prefix
         );
 
-        let response = self.http_client
+        let http_client = reqwest::Client::new();
+        let response = http_client
             .get(&url)
+            .header("Authorization", format!("Bearer {}", self.bearer_token))
             .send()
             .await
             .map_err(|e| KalpaError::ProviderError {
@@ -477,8 +481,10 @@ impl VertexProvider {
                 "operationName": operation_name
             });
             
-            let http_response = self.http_client
+            let http_client = reqwest::Client::new();
+            let http_response = http_client
                 .post(&url)
+                .header("Authorization", format!("Bearer {}", self.bearer_token))
                 .header("Content-Type", "application/json")
                 .json(&body)
                 .send()
@@ -622,4 +628,68 @@ struct GcsObject {
     name: String,
     #[serde(rename = "timeCreated")]
     time_created: String,
+}
+
+// ─── Unified GenerationProvider ──────────────────────────────────────────────
+//
+// Routes by model family: Imagen (`imagen-*`) → image `:predict` (b64 parts);
+// otherwise Gemini text via `generateContent` → text parts. Both are
+// synchronous from the caller's view. Veo (video) stays on the legacy
+// VideoGenerationProvider for now.
+
+
+#[async_trait]
+impl GenerationProvider for VertexProvider {
+    fn name(&self) -> &str {
+        "vertex"
+    }
+
+    async fn submit(&self, request: &GenerationRequest) -> KalpaResult<SubmitOutcome> {
+        let model = request.model.split().1.to_string();
+        let prompt = request.text_prompt()?;
+
+        if model.contains("imagen") {
+            let img_req = ImageGenerationRequest {
+                model: model.clone(),
+                prompt,
+                n: Some(1),
+                size: request
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("size"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+            };
+            let resp = self.generate_image(&img_req).await?;
+            let parts = resp
+                .images
+                .into_iter()
+                .map(|img| Part::Image {
+                    url: img.url,
+                    b64_data: img.b64_data,
+                    mime: Some("image/png".into()),
+                })
+                .collect();
+            Ok(SubmitOutcome::Sync(GenerationResponse { model, parts, usage: None }))
+        } else {
+            let comp_req = CompletionRequest {
+                model: model.clone(),
+                messages: vec![Message { role: Role::User, content: prompt }],
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                stop_sequences: None,
+            };
+            let resp = self.complete(&comp_req).await?;
+            Ok(SubmitOutcome::Sync(GenerationResponse {
+                model,
+                parts: vec![Part::Text { text: resp.content }],
+                usage: resp.usage,
+            }))
+        }
+    }
+
+    async fn poll(&self, _handle: &JobHandle) -> KalpaResult<PollStatus> {
+        Err(KalpaError::Other("vertex generation is synchronous; poll not supported".into()))
+    }
 }

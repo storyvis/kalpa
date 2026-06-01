@@ -149,65 +149,6 @@ pub struct GeneratedVideo {
     pub url: String,
 }
 
-/// Queue submission response from fal.ai
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FalQueueSubmitResponse {
-    /// Unique request ID for tracking
-    pub request_id: String,
-    /// URL to check status
-    pub status_url: String,
-    /// URL to get final result
-    pub response_url: String,
-    /// URL to cancel the request
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cancel_url: Option<String>,
-}
-
-/// Queue status response from fal.ai
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "status")]
-pub enum FalQueueStatus {
-    #[serde(rename = "IN_QUEUE")]
-    InQueue {
-        queue_position: Option<u32>,
-        #[serde(default, deserialize_with = "deserialize_null_as_default")]
-        logs: Vec<FalLogEntry>,
-    },
-    #[serde(rename = "IN_PROGRESS")]
-    InProgress {
-        #[serde(default, deserialize_with = "deserialize_null_as_default")]
-        logs: Vec<FalLogEntry>,
-    },
-    #[serde(rename = "COMPLETED")]
-    Completed {
-        #[serde(default, deserialize_with = "deserialize_null_as_default")]
-        logs: Vec<FalLogEntry>,
-        response_url: Option<String>,
-    },
-    #[serde(rename = "FAILED")]
-    Failed {
-        error: String,
-        #[serde(default, deserialize_with = "deserialize_null_as_default")]
-        logs: Vec<FalLogEntry>,
-    },
-}
-
-/// Helper to deserialize null as default (empty vec)
-fn deserialize_null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Default + Deserialize<'de>,
-{
-    let opt = Option::deserialize(deserializer)?;
-    Ok(opt.unwrap_or_default())
-}
-
-/// Log entry from fal.ai queue
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FalLogEntry {
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub level: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timestamp: Option<String>,
-}
+// Fal-specific types are defined in `crate::providers::falai` and re-exported
+// here for backward compatibility with CLI code that imports from `kalpa_core::types`.
+pub use crate::providers::falai::{FalLogEntry, FalQueueStatus, FalQueueSubmitResponse};
