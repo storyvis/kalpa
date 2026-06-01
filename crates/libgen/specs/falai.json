@@ -1,0 +1,186 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Fal AI API",
+    "version": "1.0.0",
+    "description": "Fal AI API spec for image and video generation with queue support"
+  },
+  "servers": [
+    {
+      "url": "https://queue.fal.run"
+    }
+  ],
+  "security": [
+    {
+      "apiKey": []
+    }
+  ],
+  "paths": {
+    "/{model_id}": {
+      "post": {
+        "operationId": "submitToQueue",
+        "summary": "Submit request to queue",
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Model endpoint ID (e.g., 'fal-ai/flux/dev')"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Queue submission response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FalQueueSubmitResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/{model_id}/requests/{request_id}/status": {
+      "get": {
+        "operationId": "getQueueStatus",
+        "summary": "Get status of a queued request",
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Model endpoint ID (e.g., 'fal-ai/flux/dev')"
+          },
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "logs",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Queue status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/{model_id}/requests/{request_id}": {
+      "get": {
+        "operationId": "getQueueResult",
+        "summary": "Get result from completed queue request",
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Model endpoint ID (e.g., 'fal-ai/flux/dev')"
+          },
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Queue result response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "apiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization",
+        "description": "API key must be prefixed with 'Key ', e.g. Authorization: Key YOUR_API_KEY"
+      }
+    },
+    "schemas": {
+      "FalQueueSubmitResponse": {
+        "type": "object",
+        "required": ["request_id", "status_url", "response_url"],
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "status_url": {
+            "type": "string"
+          },
+          "response_url": {
+            "type": "string"
+          },
+          "cancel_url": {
+            "type": "string"
+          }
+        }
+      },
+      "FalLogEntry": {
+        "type": "object",
+        "required": ["message"],
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "level": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,191 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Anthropic Claude API",
+    "version": "2026-05",
+    "description": "OpenAPI specification for the Anthropic Claude Messages API"
+  },
+  "servers": [
+    {
+      "url": "https://api.anthropic.com"
+    }
+  ],
+  "security": [
+    {
+      "apiKeyAuth": []
+    }
+  ],
+  "paths": {
+    "/v1/messages": {
+      "post": {
+        "operationId": "createMessage",
+        "summary": "Create a Message",
+        "description": "Send a structured list of input messages and receive a model-generated response.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateMessageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "apiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key"
+      }
+    },
+    "schemas": {
+      "CreateMessageRequest": {
+        "type": "object",
+        "required": ["model", "max_tokens", "messages"],
+        "properties": {
+          "model": {
+            "type": "string",
+            "example": "claude-sonnet-4-6"
+          },
+          "max_tokens": {
+            "type": "integer",
+            "description": "Maximum output tokens."
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InputMessage"
+            }
+          },
+          "system": {
+            "type": "string",
+            "nullable": true,
+            "description": "System prompt string"
+          },
+          "temperature": {
+            "type": "number",
+            "nullable": true,
+            "description": "Randomness (0 = deterministic). Default 1."
+          },
+          "top_p": {
+            "type": "number",
+            "nullable": true,
+            "description": "Nucleus sampling probability"
+          },
+          "top_k": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Sample only from top-k tokens"
+          },
+          "stop_sequences": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "Model will stop on any of these strings"
+          }
+        }
+      },
+      "InputMessage": {
+        "type": "object",
+        "required": ["role", "content"],
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": ["user", "assistant"]
+          },
+          "content": {
+            "type": "string",
+            "description": "Message content as plain text"
+          }
+        }
+      },
+      "MessageResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContentBlock"
+            }
+          },
+          "model": {
+            "type": "string"
+          },
+          "stop_reason": {
+            "type": "string",
+            "nullable": true
+          },
+          "stop_sequence": {
+            "type": "string",
+            "nullable": true
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
+          }
+        }
+      },
+      "ContentBlock": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Block type, e.g. 'text'"
+          },
+          "text": {
+            "type": "string",
+            "nullable": true,
+            "description": "Text content (present when type is 'text')"
+          }
+        }
+      },
+      "Usage": {
+        "type": "object",
+        "properties": {
+          "input_tokens": {
+            "type": "integer",
+            "nullable": true
+          },
+          "output_tokens": {
+            "type": "integer",
+            "nullable": true
+          },
+          "cache_creation_input_tokens": {
+            "type": "integer",
+            "nullable": true
+          },
+          "cache_read_input_tokens": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      }
+    }
+  }
+}

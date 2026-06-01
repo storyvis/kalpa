@@ -1,0 +1,23 @@
+[package]
+name = "kalpa-libgen"
+description = "OpenAPI 3.0 spec to SDK client generation using progenitor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+progenitor-client.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+openapiv3 = "2"
+progenitor = { workspace = true }
+prettyplease = "0.2"
+serde_json.workspace = true
+syn = "2"

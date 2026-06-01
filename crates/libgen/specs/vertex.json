@@ -1,0 +1,683 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Vertex AI Gemini API",
+    "version": "1.0.0",
+    "description": "Unified Vertex AI API for text, image, and video generation with Gemini models"
+  },
+  "servers": [
+    {
+      "url": "https://{location}-aiplatform.googleapis.com",
+      "variables": {
+        "location": {
+          "default": "us-central1",
+          "description": "Cloud region (us-central1, europe-west4, asia-southeast1)"
+        }
+      }
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/v1/projects/{projectId}/locations/{location}/publishers/google/models/{modelId}:generateContent": {
+      "post": {
+        "operationId": "generateContent",
+        "summary": "Generate text, images, or videos with Gemini models",
+        "description": "Unified endpoint for all generation types. Use different models for different capabilities: gemini-2.0-flash for text, imagen-3.0-generate-001 for images, veo-2.0-generate-001 for videos",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Google Cloud project ID"
+          },
+          {
+            "name": "location",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "default": "us-central1"
+            },
+            "description": "Cloud region"
+          },
+          {
+            "name": "modelId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "gemini-2.0-flash"
+            },
+            "description": "Model ID: gemini-2.0-flash, gemini-1.5-pro, imagen-3.0-generate-001, veo-2.0-generate-001"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{projectId}/locations/{location}/publishers/google/models/{modelId}:predict": {
+      "post": {
+        "operationId": "predict",
+        "summary": "Predict endpoint for Imagen image generation",
+        "description": "Specialized endpoint for Imagen models. Required for imagen-3.0-generate-001, imagen-4.0-generate-001, etc.",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Google Cloud project ID"
+          },
+          {
+            "name": "location",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "default": "us-central1"
+            },
+            "description": "Cloud region"
+          },
+          {
+            "name": "modelId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "imagen-4.0-generate-001"
+            },
+            "description": "Model ID for Imagen: imagen-3.0-generate-001, imagen-4.0-generate-001, etc."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PredictRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PredictResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{projectId}/locations/{location}/publishers/google/models/{modelId}:predictLongRunning": {
+      "post": {
+        "operationId": "predictLongRunning",
+        "summary": "Predict endpoint for long-running operations",
+        "description": "Specialized endpoint for Veo video generation models. Required for veo-2.0-generate-001, veo-3.0-generate, etc.",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Google Cloud project ID"
+          },
+          {
+            "name": "location",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "default": "us-central1"
+            },
+            "description": "Cloud region"
+          },
+          {
+            "name": "modelId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "veo-2.0-generate-001"
+            },
+            "description": "Model ID for Veo: veo-2.0-generate-001, veo-3.0-generate, etc."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VideoPredictRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Long-running operation created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{projectId}/locations/{location}/operations/{operationId}": {
+      "get": {
+        "operationId": "getOperation",
+        "summary": "Get long-running operation status",
+        "description": "Retrieves the status and result of a long-running operation (e.g., video generation). Use this for UUID-based operation IDs from Veo models.",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Google Cloud project ID"
+          },
+          {
+            "name": "location",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Cloud region"
+          },
+          {
+            "name": "operationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Operation ID returned from predictLongRunning"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "GenerateRequest": {
+        "type": "object",
+        "required": ["contents"],
+        "properties": {
+          "contents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Content"
+            },
+            "description": "Input prompts and content"
+          },
+          "generationConfig": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GenerationConfig"
+              }
+            ],
+            "nullable": true
+          },
+          "safetySettings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SafetySetting"
+            },
+            "nullable": true
+          }
+        }
+      },
+      "Content": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "nullable": true,
+            "description": "Role of the content creator (user or model)"
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Part"
+            },
+            "nullable": true,
+            "description": "Content parts (text, images, videos, etc.)"
+          }
+        }
+      },
+      "Part": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Text content or prompt"
+          },
+          "inlineData": {
+            "$ref": "#/components/schemas/InlineData"
+          },
+          "fileData": {
+            "$ref": "#/components/schemas/FileData"
+          }
+        }
+      },
+      "InlineData": {
+        "type": "object",
+        "required": ["mimeType", "data"],
+        "properties": {
+          "mimeType": {
+            "type": "string",
+            "example": "image/png",
+            "description": "MIME type of the data"
+          },
+          "data": {
+            "type": "string",
+            "format": "byte",
+            "description": "Base64 encoded data"
+          }
+        }
+      },
+      "FileData": {
+        "type": "object",
+        "required": ["mimeType", "fileUri"],
+        "properties": {
+          "mimeType": {
+            "type": "string",
+            "example": "video/mp4",
+            "description": "MIME type of the file"
+          },
+          "fileUri": {
+            "type": "string",
+            "example": "gs://bucket/video.mp4",
+            "description": "Cloud Storage URI"
+          }
+        }
+      },
+      "GenerationConfig": {
+        "type": "object",
+        "properties": {
+          "temperature": {
+            "type": "number",
+            "format": "float",
+            "nullable": true,
+            "default": 1.0,
+            "minimum": 0.0,
+            "maximum": 2.0,
+            "description": "Controls randomness in generation"
+          },
+          "maxOutputTokens": {
+            "type": "integer",
+            "nullable": true,
+            "default": 2048,
+            "description": "Maximum tokens to generate"
+          },
+          "topP": {
+            "type": "number",
+            "format": "float",
+            "nullable": true,
+            "description": "Nucleus sampling parameter"
+          },
+          "topK": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Top-k sampling parameter"
+          },
+          "stopSequences": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "description": "Sequences that stop generation"
+          },
+          "responseMimeType": {
+            "type": "string",
+            "nullable": true,
+            "example": "application/json",
+            "description": "Output format (text/plain, application/json, image/png, video/mp4)"
+          }
+        }
+      },
+      "SafetySetting": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "HARM_CATEGORY_HARASSMENT",
+              "HARM_CATEGORY_HATE_SPEECH",
+              "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+              "HARM_CATEGORY_DANGEROUS_CONTENT"
+            ]
+          },
+          "threshold": {
+            "type": "string",
+            "enum": [
+              "BLOCK_NONE",
+              "BLOCK_ONLY_HIGH",
+              "BLOCK_MEDIUM_AND_ABOVE",
+              "BLOCK_LOW_AND_ABOVE"
+            ]
+          }
+        }
+      },
+      "GenerateResponse": {
+        "type": "object",
+        "properties": {
+          "candidates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Candidate"
+            },
+            "nullable": true
+          },
+          "usageMetadata": {
+            "$ref": "#/components/schemas/UsageMetadata"
+          }
+        }
+      },
+      "Candidate": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/Content"
+          },
+          "finishReason": {
+            "type": "string",
+            "enum": ["STOP", "MAX_TOKENS", "SAFETY", "RECITATION", "OTHER"],
+            "description": "Reason why generation stopped"
+          },
+          "safetyRatings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SafetyRating"
+            }
+          },
+          "citationMetadata": {
+            "type": "object",
+            "properties": {
+              "citations": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      },
+      "SafetyRating": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "probability": {
+            "type": "string",
+            "enum": ["NEGLIGIBLE", "LOW", "MEDIUM", "HIGH"]
+          }
+        }
+      },
+      "UsageMetadata": {
+        "type": "object",
+        "properties": {
+          "promptTokenCount": {
+            "type": "integer",
+            "description": "Number of tokens in the prompt"
+          },
+          "candidatesTokenCount": {
+            "type": "integer",
+            "description": "Number of tokens in all candidates"
+          },
+          "totalTokenCount": {
+            "type": "integer",
+            "description": "Total token count"
+          }
+        }
+      },
+      "PredictRequest": {
+        "type": "object",
+        "required": ["instances"],
+        "properties": {
+          "instances": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImageInstance"
+            },
+            "description": "Array of instances with prompts"
+          },
+          "parameters": {
+            "$ref": "#/components/schemas/ImageParameters"
+          }
+        }
+      },
+      "ImageInstance": {
+        "type": "object",
+        "required": ["prompt"],
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "description": "Text prompt for image generation"
+          }
+        }
+      },
+      "ImageParameters": {
+        "type": "object",
+        "properties": {
+          "sampleCount": {
+            "type": "integer",
+            "nullable": true,
+            "default": 1,
+            "minimum": 1,
+            "maximum": 4,
+            "description": "Number of images to generate"
+          },
+          "aspectRatio": {
+            "type": "string",
+            "nullable": true,
+            "description": "Aspect ratio (e.g., '1:1', '16:9', '9:16')"
+          },
+          "negativePrompt": {
+            "type": "string",
+            "nullable": true,
+            "description": "Negative prompt to avoid certain elements"
+          }
+        }
+      },
+      "PredictResponse": {
+        "type": "object",
+        "properties": {
+          "predictions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImagePrediction"
+            },
+            "nullable": true,
+            "description": "Array of generated images"
+          }
+        }
+      },
+      "ImagePrediction": {
+        "type": "object",
+        "properties": {
+          "bytesBase64Encoded": {
+            "type": "string",
+            "format": "byte",
+            "description": "Base64 encoded image data"
+          },
+          "mimeType": {
+            "type": "string",
+            "default": "image/png",
+            "description": "MIME type of the generated image"
+          }
+        }
+      },
+      "OperationResponse": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "nullable": true,
+            "description": "Operation name/ID"
+          },
+          "done": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Whether the operation is complete"
+          },
+          "error": {
+            "$ref": "#/components/schemas/OperationError"
+          },
+          "response": {
+            "$ref": "#/components/schemas/PredictResponse"
+          },
+          "metadata": {
+            "type": "object",
+            "nullable": true,
+            "description": "Operation metadata"
+          }
+        }
+      },
+      "OperationError": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Error code"
+          },
+          "message": {
+            "type": "string",
+            "nullable": true,
+            "description": "Error message"
+          }
+        }
+      },
+      "VideoPredictRequest": {
+        "type": "object",
+        "required": ["instances"],
+        "properties": {
+          "instances": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VideoInstance"
+            },
+            "description": "Array of video generation instances"
+          },
+          "parameters": {
+            "$ref": "#/components/schemas/VideoParameters"
+          }
+        }
+      },
+      "VideoInstance": {
+        "type": "object",
+        "required": ["prompt"],
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "description": "Text prompt for video generation"
+          },
+          "image": {
+            "$ref": "#/components/schemas/InlineData"
+          }
+        }
+      },
+      "VideoParameters": {
+        "type": "object",
+        "properties": {
+          "sampleCount": {
+            "type": "integer",
+            "nullable": true,
+            "default": 1,
+            "description": "Number of videos to generate"
+          },
+          "aspectRatio": {
+            "type": "string",
+            "nullable": true,
+            "description": "Aspect ratio (e.g., '16:9', '9:16')"
+          },
+          "storageUri": {
+            "type": "string",
+            "nullable": true,
+            "description": "GCS bucket URI for output videos (required for Veo 2.0)"
+          }
+        }
+      },
+      "VideoPrediction": {
+        "type": "object",
+        "properties": {
+          "bytesBase64Encoded": {
+            "type": "string",
+            "format": "byte",
+            "description": "Base64 encoded video data"
+          },
+          "mimeType": {
+            "type": "string",
+            "default": "video/mp4",
+            "description": "MIME type of the generated video"
+          }
+        }
+      }
+    }
+  }
+}

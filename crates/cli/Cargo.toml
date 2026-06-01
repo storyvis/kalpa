@@ -1,0 +1,31 @@
+[package]
+name = "kalpa-cli"
+description = "Beautiful CLI interface for kalpa AI tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "kalpa"
+path = "src/main.rs"
+
+[dependencies]
+kalpa-core.workspace = true
+kalpa-libgen.workspace = true
+
+anyhow.workspace = true
+base64 = "0.22"
+clap.workspace = true
+colored.workspace = true
+dialoguer.workspace = true
+indicatif.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+shellexpand = "3.1"
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid = { version = "1.0", features = ["v4"] }

@@ -1,0 +1,52 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/libgen",
+    "crates/cli",
+    "crates/core",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["shaswot16"]
+repository = "https://github.com/storyvis/kalpa"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# HTTP
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "multipart"], default-features = false }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# OpenAPI / Progenitor
+progenitor = "0.8"
+progenitor-client = "0.8"
+progenitor-macro = "0.8"
+
+# Config
+toml = "0.8"
+dirs = "6"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+colored = "2"
+indicatif = "0.17"
+dialoguer = "0.11"
+
+# Internal crates
+kalpa-core = { path = "crates/core" }
+kalpa-libgen = { path = "crates/libgen" }
