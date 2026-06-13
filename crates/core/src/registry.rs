@@ -107,6 +107,16 @@ impl Registry {
                 output_modalities: vec![Modality::Image, Modality::Text],
                 bindings: vec![gemini("gemini-3-pro-image-preview")],
             },
+            // Gemini 3.1 Flash Image on Vertex: multimodal in, image+text out.
+            // Routed through Vertex `generateContent` (non-`imagen` slug).
+            ModelInfo {
+                slug: "gemini-3.1-flash-image".into(),
+                display_name: "Gemini 3.1 Flash Image (Nano Banana 2)".into(),
+                supported_gen_types: vec![73, 72, 78], // t2i, t2t, i2i
+                input_modalities: vec![Modality::Text, Modality::Image],
+                output_modalities: vec![Modality::Image, Modality::Text],
+                bindings: vec![vertex("gemini-3.1-flash-image")],
+            },
             ModelInfo {
                 slug: "gemini-2.5-flash".into(),
                 display_name: "Gemini 2.5 Flash".into(),
@@ -290,12 +300,13 @@ mod tests {
     #[test]
     fn list_by_modality() {
         let reg = Registry::with_defaults();
-        // flux-dev, gemini-3-pro-image, imagen-4, dall-e-3 emit images.
-        assert_eq!(reg.list(Modality::Image).len(), 4);
+        // flux-dev, gemini-3-pro-image, gemini-3.1-flash-image, imagen-4, dall-e-3 emit images.
+        assert_eq!(reg.list(Modality::Image).len(), 5);
         // minimax-video emits video.
         assert_eq!(reg.list(Modality::Video).len(), 1);
-        // gemini-3-pro-image, gemini-2.5-flash, gpt-4.1, claude-sonnet, whisper-1 emit text.
-        assert_eq!(reg.list(Modality::Text).len(), 5);
+        // gemini-3-pro-image, gemini-3.1-flash-image, gemini-2.5-flash, gpt-4.1,
+        // claude-sonnet, whisper-1 emit text.
+        assert_eq!(reg.list(Modality::Text).len(), 6);
         // tts-1 emits audio.
         assert_eq!(reg.list(Modality::Audio).len(), 1);
     }
