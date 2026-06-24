@@ -395,6 +395,14 @@
             "nullable": true,
             "example": "application/json",
             "description": "Output format (text/plain, application/json, image/png, video/mp4)"
+          },
+          "responseModalities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "description": "Output modalities to generate (e.g., ['IMAGE', 'TEXT'] for Gemini image models)"
           }
         }
       },

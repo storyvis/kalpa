@@ -36,10 +36,11 @@ impl VertexProvider {
     /// * `project_id` - Google Cloud project ID
     /// * `location` - Cloud region (e.g., "us-central1")
     /// * `gcs_bucket` - Optional GCS bucket for outputs (e.g., "gs://my-bucket")
-    pub fn new(bearer_token: String, project_id: String, location: String, gcs_bucket: Option<String>) -> Self {
-        let base_url = format!("https://{}-aiplatform.googleapis.com", location);
+    pub fn new(bearer_token: String, project_id: String, _location: String, gcs_bucket: Option<String>) -> Self {
+        // Always use the global endpoint — works for all models (Gemini, Imagen, Veo)
+        let base_url = "https://aiplatform.googleapis.com";
         let client = vertex::Client::new_with_client(
-            &base_url,
+            base_url,
             reqwest::Client::builder()
                 .default_headers({
                     let mut headers = reqwest::header::HeaderMap::new();
@@ -57,7 +58,7 @@ impl VertexProvider {
         Self {
             client,
             project_id,
-            location,
+            location: "global".to_string(),
             bearer_token,
             gcs_bucket,
         }
@@ -145,6 +146,7 @@ impl CompletionProvider for VertexProvider {
             top_k: None,
             stop_sequences: request.stop_sequences.clone(),
             response_mime_type: None,
+            response_modalities: None,
         });
 
         let vertex_request = vertex::types::GenerateRequest {
@@ -229,6 +231,10 @@ impl ImageGenerationProvider for VertexProvider {
 
     fn supported_models(&self) -> &[&str] {
         &[
+            // Gemini image models (use :generateContent with responseModalities)
+            "gemini-3.1-flash-image",     // Nano Banana 2
+            "gemini-3-pro-image",         // Nano Banana Pro
+            "gemini-2.5-flash-image",     // Nano Banana (original)
             // Imagen 4.0 (latest)
             "imagen-4.0-generate-001",
             // Imagen 3.0
@@ -242,7 +248,12 @@ impl ImageGenerationProvider for VertexProvider {
         &self,
         request: &ImageGenerationRequest,
     ) -> KalpaResult<ImageGenerationResponse> {
-        // Build Vertex AI request using :predict format for Imagen
+        // Gemini image models use :generateContent with responseModalities
+        if request.model.starts_with("gemini-") {
+            return self.generate_image_gemini(&request.model, &request.prompt).await;
+        }
+
+        // Imagen models use :predict format
         let instances = vec![vertex::types::ImageInstance {
             prompt: request.prompt.clone(),
         }];
@@ -398,6 +409,92 @@ impl VideoGenerationProvider for VertexProvider {
 }
 
 impl VertexProvider {
+    /// Generate an image using a Gemini image model via :generateContent with responseModalities.
+    ///
+    /// Models like `gemini-3.1-flash-image` and `gemini-3-pro-image` use the standard
+    /// `generateContent` endpoint but with `generationConfig.responseModalities: ["IMAGE", "TEXT"]`
+    /// to produce inline base64 images in the response.
+    async fn generate_image_gemini(
+        &self,
+        model: &str,
+        prompt: &str,
+    ) -> KalpaResult<ImageGenerationResponse> {
+        // Build request using libgen types — same endpoint as text but with responseModalities
+        let contents = vec![vertex::types::Content {
+            role: Some("user".to_string()),
+            parts: Some(vec![vertex::types::Part {
+                text: Some(prompt.to_string()),
+                inline_data: None,
+                file_data: None,
+            }]),
+        }];
+
+        let generation_config = Some(vertex::types::GenerationConfig {
+            temperature: None,
+            max_output_tokens: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            response_mime_type: None,
+            response_modalities: Some(vec!["IMAGE".to_string(), "TEXT".to_string()]),
+        });
+
+        let vertex_request = vertex::types::GenerateRequest {
+            contents,
+            generation_config,
+            safety_settings: None,
+        };
+
+        // Call :generateContent via the libgen client
+        let response = self
+            .client
+            .generate_content(
+                &self.project_id,
+                &self.location,
+                model,
+                &vertex_request,
+            )
+            .await
+            .map_err(|e| KalpaError::ProviderError {
+                status: 500,
+                message: format!("Gemini image generation error: {}", e),
+            })?;
+
+        // Extract images from candidates[].content.parts[].inlineData
+        let mut images = Vec::new();
+        if let Some(candidates) = &response.candidates {
+            for candidate in candidates {
+                if let Some(content) = &candidate.content {
+                    if let Some(parts) = &content.parts {
+                        for part in parts {
+                            if let Some(inline_data) = &part.inline_data {
+                                // Check if it's an image mime type
+                                if inline_data.mime_type.starts_with("image/") {
+                                    images.push(GeneratedImage {
+                                        url: None,
+                                        b64_data: Some(inline_data.data.clone()),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if images.is_empty() {
+            return Err(KalpaError::ProviderError {
+                status: 500,
+                message: "No images returned from Gemini model response".to_string(),
+            });
+        }
+
+        Ok(ImageGenerationResponse {
+            images,
+            model: model.to_string(),
+        })
+    }
+
     /// List objects in a GCS bucket with a given prefix using the GCS JSON REST API
     async fn list_gcs_objects(
         &self,
@@ -471,8 +568,8 @@ impl VertexProvider {
             // Veo operations use a special :fetchPredictOperation endpoint
             // This is NOT the standard LRO operations API
             let url = format!(
-                "https://{}-aiplatform.googleapis.com/v1/projects/{}/locations/{}/publishers/google/models/{}:fetchPredictOperation",
-                self.location, self.project_id, self.location, model_name
+                "https://aiplatform.googleapis.com/v1/projects/{}/locations/{}/publishers/google/models/{}:fetchPredictOperation",
+                self.project_id, self.location, model_name
             );
             
             // The request body must contain only the operation name

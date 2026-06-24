@@ -202,7 +202,10 @@ fn get_supported_models(provider: Provider, content_type: &ContentType) -> Vec<&
             ]
         }
         (Provider::Vertex, ContentType::Image { .. }) => {
-            vec!["imagen-4.0-generate-001", "imagen-3.0-generate-001", "imagen-3.0-generate-002", "imagen-3.0-fast-generate-001"]
+            vec![
+                "gemini-3.1-flash-image", "gemini-3-pro-image", "gemini-2.5-flash-image",
+                "imagen-4.0-generate-001", "imagen-3.0-generate-001", "imagen-3.0-generate-002", "imagen-3.0-fast-generate-001",
+            ]
         }
         (Provider::Vertex, ContentType::Video { .. }) => {
             vec!["veo-3.0-generate", "veo-3.0-fast-generate-preview", "veo-2.0-generate-001"]
