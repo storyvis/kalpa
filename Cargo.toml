@@ -9,9 +9,9 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "Apache-2.0"
 authors = ["shaswot16"]
-repository = "https://github.com/shaswot16/kalpa"
+repository = "https://github.com/storyvis/kalpa"
 
 [workspace.dependencies]
 # Async runtime
