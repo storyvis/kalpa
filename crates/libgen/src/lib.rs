@@ -51,5 +51,9 @@ pub mod claude {
     include!(concat!(env!("OUT_DIR"), "/claude.rs"));
 }
 
+pub mod slurm {
+    include!(concat!(env!("OUT_DIR"), "/slurm.rs"));
+}
+
 /// Re-export for convenience in downstream crates.
 pub use progenitor_client;
