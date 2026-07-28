@@ -1,33 +1,49 @@
 //! # kalpa-libgen
 //!
-//! Client SDK generation library for AI provider APIs.
-//!
-//! This crate uses [progenitor](https://docs.rs/progenitor) to generate
-//! type-safe Rust client libraries from OpenAPI 3.0 specification files.
+//! Type-safe Rust clients generated from OpenAPI 3.0 specs via
+//! [progenitor](https://docs.rs/progenitor).
 //!
 //! ## Directory Structure
 //!
 //! ```text
 //! crates/libgen/
-//! ├── specs/          # OpenAPI 3.0 spec files (JSON/YAML)
-//! │   ├── gemini.json
-//! │   ├── vertex.json
-//! │   └── fal.json
-//! ├── sdk/            # Generated SDK modules (output)
-//! │   ├── gemini.rs
-//! │   ├── vertex.rs
-//! │   └── fal.rs
+//! ├── specs/          # OpenAPI 3.0 spec files (JSON)
+//! ├── sdk/            # Generated SDK copies (for inspection)
 //! └── src/
-//!     └── lib.rs      # This file - re-exports generated SDKs
+//!     └── lib.rs      # Re-exports generated SDKs
 //! ```
 //!
-//! ## Adding a New Provider
+//! ## Adding a New Spec
 //!
-//! 1. Place the OpenAPI 3.0 spec in `specs/<provider>.json`
-//! 2. Add the `generate_api!` invocation in `build.rs`
-//! 3. Add the module re-export below
+//! 1. Place the OpenAPI 3.0 spec in `specs/<name>.json`
+//! 2. Add the module re-export below (`include!` from `OUT_DIR`)
 //!
-//! The build script will automatically generate the client code at compile time.
+//! The build script generates client code at compile time.
+//!
+//! ## Using Slurm from another project
+//!
+//! Depend on this crate and pass your `slurmrestd` base URL at runtime:
+//!
+//! ```toml
+//! kalpa-libgen = { path = "../kalpa/crates/libgen" }
+//! ```
+//!
+//! ```rust,ignore
+//! use kalpa_libgen::{slurm, slurm_client};
+//!
+//! let client = slurm_client("http://slurmrestd:6820", "alice", "secret-token");
+//! let _ = client.slurm_v0045_get_ping().await?;
+//! let _ = client.slurm_v0045_get_jobs(/* ... */).await?;
+//! // request/response types: slurm::types::...
+//! ```
+//!
+//! Prefer [`slurm_client`] / [`slurm_client_bearer`] so auth headers are set.
+//! Or build your own `reqwest::Client` and call
+//! [`slurm::Client::new_with_client`](slurm::Client::new_with_client).
+
+mod slurm_auth;
+
+pub use slurm_auth::{slurm_client, slurm_client_bearer};
 
 // Generated SDK modules - automatically included from build.rs output
 
@@ -51,6 +67,10 @@ pub mod claude {
     include!(concat!(env!("OUT_DIR"), "/claude.rs"));
 }
 
+/// Slurm REST API client generated from `specs/slurm.json` (slurmrestd OpenAPI).
+///
+/// Construct with [`crate::slurm_client`] or [`crate::slurm_client_bearer`],
+/// passing the cluster `slurmrestd` URL at runtime.
 pub mod slurm {
     include!(concat!(env!("OUT_DIR"), "/slurm.rs"));
 }

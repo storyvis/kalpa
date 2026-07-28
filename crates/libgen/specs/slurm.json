@@ -8487,7 +8487,7 @@
                 "description": "Whether whole nodes were allocated"
               },
               "allocation": {
-                "$ref": "#\/components\/schemas\/v0.0.45_job_res_nodes",
+                "$ref": "#\/components\/schemas\/v0.0.45_job_res_nodes_array",
                 "description": "Allocated node resources (Job resources for a node)"
               }
             }
@@ -8513,7 +8513,7 @@
           "nodes\/allocation"
         ]
       },
-      "v0.0.45_job_res_nodes": {
+      "v0.0.45_job_res_nodes_array": {
         "type": "array",
         "description": "Job resources for a node",
         "items": {
