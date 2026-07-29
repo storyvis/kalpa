@@ -71,27 +71,15 @@ fn generate_sdk(spec_path: &Path, name: &str, out_dir: &Path) {
     }
 
     // Format with prettyplease for readable output
-    let formatted = match syn::parse_file(&content) {
-        Ok(ast) => prettyplease::unparse(&ast),
-        Err(e) => {
-            eprintln!(
-                "cargo:warning=Failed to parse generated code for {}: {}",
-                name, e
-            );
-            content
-        }
-    };
+    let ast = syn::parse_file(&content).unwrap_or_else(|e| {
+        // If parsing fails, write unformatted
+        eprintln!("cargo:warning=Failed to parse generated code for {}: {}", name, e);
+        fs::write(&output_path, &content).expect("Failed to write generated SDK");
+        return syn::parse_file("").unwrap();
+    });
 
-    fs::write(&output_path, &formatted).expect("Failed to write generated SDK");
+    let formatted = prettyplease::unparse(&ast);
+    fs::write(&output_path, formatted).expect("Failed to write generated SDK");
 
-    // Also write a copy under sdk/ for inspection / local use
-    let sdk_dir = Path::new("sdk");
-    fs::create_dir_all(sdk_dir).expect("Failed to create sdk/ directory");
-    let sdk_path = sdk_dir.join(format!("{}.rs", name));
-    fs::write(&sdk_path, &formatted).expect("Failed to write SDK copy to sdk/");
-
-    eprintln!(
-        "cargo:warning=Generated SDK for '{}' at {:?} (and {:?})",
-        name, output_path, sdk_path
-    );
+    eprintln!("cargo:warning=Generated SDK for '{}' at {:?}", name, output_path);
 }
