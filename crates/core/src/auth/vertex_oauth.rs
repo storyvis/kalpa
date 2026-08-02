@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Google service account credentials from JSON file
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServiceAccount {
     #[serde(rename = "type")]
     pub account_type: String,
@@ -74,16 +74,34 @@ impl VertexAuthToken {
         }
     }
 
-    /// Refresh the token if needed
+    /// Re-exchange a JWT for a fresh access token when expired (or within 60s of expiry).
+    pub async fn refresh_if_needed_sa(&mut self, sa: &ServiceAccount) -> KalpaResult<()> {
+        if self.is_expired() {
+            *self = Self::from_service_account(sa.clone()).await?;
+        }
+        Ok(())
+    }
+
+    /// Refresh the token if needed, reloading the service account from disk.
     pub async fn refresh_if_needed(
         &mut self,
         service_account_path: &Path,
     ) -> KalpaResult<()> {
-        if self.is_expired() {
-            let new_token = Self::from_service_account_file(service_account_path).await?;
-            *self = new_token;
+        if !self.is_expired() {
+            return Ok(());
         }
-        Ok(())
+
+        let json_content = std::fs::read_to_string(service_account_path).map_err(|e| {
+            KalpaError::Config(format!(
+                "Failed to read service account file {}: {}",
+                service_account_path.display(),
+                e
+            ))
+        })?;
+        let sa: ServiceAccount = serde_json::from_str(&json_content)
+            .map_err(|e| KalpaError::Config(format!("Invalid service account JSON: {}", e)))?;
+
+        self.refresh_if_needed_sa(&sa).await
     }
 }
 

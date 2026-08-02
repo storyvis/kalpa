@@ -5,6 +5,7 @@ use kalpa_libgen::vertex;
 use tracing::{info, instrument};
 use uuid::Uuid;
 
+use crate::auth::{ServiceAccount, VertexAuthToken};
 use crate::error::{KalpaError, KalpaResult};
 use crate::generation::{GenerationRequest, GenerationResponse, Part};
 use crate::provider::{
@@ -16,52 +17,134 @@ use crate::types::{
     GeneratedImage, GeneratedVideo, Message, Role, Usage, VideoGenerationRequest,
     VideoGenerationResponse,
 };
-use std::time::Duration;
+use std::path::Path;
+use std::time::{Duration, SystemTime};
+use tokio::sync::Mutex;
 use tokio::time::sleep;
+
+struct AuthInner {
+    token: VertexAuthToken,
+    client: vertex::Client,
+}
 
 /// Vertex AI provider for Gemini models, Imagen, and Veo.
 pub struct VertexProvider {
-    client: vertex::Client,
     project_id: String,
     location: String,
-    bearer_token: String,
     gcs_bucket: Option<String>,
+    /// When set, access tokens are refreshed via JWT exchange before expiry.
+    service_account: Option<ServiceAccount>,
+    auth: Mutex<AuthInner>,
 }
 
 impl VertexProvider {
-    /// Create a new Vertex AI provider.
-    ///
-    /// # Arguments
-    /// * `bearer_token` - OAuth2/JWT token for authentication
-    /// * `project_id` - Google Cloud project ID
-    /// * `location` - Cloud region (e.g., "us-central1")
-    /// * `gcs_bucket` - Optional GCS bucket for outputs (e.g., "gs://my-bucket")
-    pub fn new(bearer_token: String, project_id: String, _location: String, gcs_bucket: Option<String>) -> Self {
-        // Always use the global endpoint — works for all models (Gemini, Imagen, Veo)
+    fn build_client(bearer_token: &str) -> vertex::Client {
         let base_url = "https://aiplatform.googleapis.com";
-        let client = vertex::Client::new_with_client(
+        vertex::Client::new_with_client(
             base_url,
             reqwest::Client::builder()
                 .default_headers({
                     let mut headers = reqwest::header::HeaderMap::new();
                     headers.insert(
                         reqwest::header::AUTHORIZATION,
-                        reqwest::header::HeaderValue::from_str(&format!("Bearer {}", bearer_token))
-                            .unwrap(),
+                        reqwest::header::HeaderValue::from_str(&format!(
+                            "Bearer {}",
+                            bearer_token
+                        ))
+                        .unwrap(),
                     );
                     headers
                 })
                 .build()
                 .unwrap(),
-        );
+        )
+    }
+
+    /// Create a provider from a static OAuth access token (no refresh).
+    ///
+    /// Prefer [`Self::from_service_account`] for long-lived processes — Google
+    /// access tokens expire in ~1 hour.
+    pub fn new(
+        bearer_token: String,
+        project_id: String,
+        _location: String,
+        gcs_bucket: Option<String>,
+    ) -> Self {
+        let client = Self::build_client(&bearer_token);
+        let token = VertexAuthToken {
+            access_token: bearer_token,
+            // Unused when `service_account` is None (no refresh).
+            expires_at: SystemTime::now() + Duration::from_secs(3600),
+            project_id: project_id.clone(),
+        };
 
         Self {
-            client,
             project_id,
             location: "global".to_string(),
-            bearer_token,
             gcs_bucket,
+            service_account: None,
+            auth: Mutex::new(AuthInner { token, client }),
         }
+    }
+
+    /// Create a provider that mints and refreshes OAuth access tokens from a service account.
+    pub async fn from_service_account(
+        sa: ServiceAccount,
+        _location: String,
+        gcs_bucket: Option<String>,
+    ) -> KalpaResult<Self> {
+        let token = VertexAuthToken::from_service_account(sa.clone()).await?;
+        let project_id = token.project_id.clone();
+        let client = Self::build_client(&token.access_token);
+
+        Ok(Self {
+            project_id,
+            location: "global".to_string(),
+            gcs_bucket,
+            service_account: Some(sa),
+            auth: Mutex::new(AuthInner { token, client }),
+        })
+    }
+
+    /// Load a service-account JSON file and build a refreshable provider.
+    pub async fn from_service_account_file<P: AsRef<Path>>(
+        path: P,
+        location: String,
+        gcs_bucket: Option<String>,
+    ) -> KalpaResult<Self> {
+        let json_content = std::fs::read_to_string(path.as_ref()).map_err(|e| {
+            KalpaError::Config(format!(
+                "Failed to read service account file {}: {}",
+                path.as_ref().display(),
+                e
+            ))
+        })?;
+        let sa: ServiceAccount = serde_json::from_str(&json_content)
+            .map_err(|e| KalpaError::Config(format!("Invalid service account JSON: {}", e)))?;
+        Self::from_service_account(sa, location, gcs_bucket).await
+    }
+
+    /// Ensure the access token is fresh, then return a cloned client and bearer.
+    async fn auth_snapshot(&self) -> KalpaResult<(vertex::Client, String)> {
+        let mut inner = self.auth.lock().await;
+        if let Some(sa) = &self.service_account {
+            if inner.token.is_expired() {
+                inner.token.refresh_if_needed_sa(sa).await?;
+                inner.client = Self::build_client(&inner.token.access_token);
+                info!("refreshed Vertex AI OAuth access token");
+            }
+        }
+        Ok((inner.client.clone(), inner.token.access_token.clone()))
+    }
+
+    /// Google Cloud project ID for this provider.
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    /// Current OAuth access token, refreshing first when SA-backed.
+    pub async fn access_token(&self) -> KalpaResult<String> {
+        Ok(self.auth_snapshot().await?.1)
     }
 
     /// Convert kalpa Message to Vertex Content
@@ -131,6 +214,8 @@ impl CompletionProvider for VertexProvider {
     #[instrument(skip(self, request), fields(model = %request.model, provider = "vertex"))]
     async fn complete(&self, request: &CompletionRequest) -> KalpaResult<CompletionResponse> {
         info!(model = %request.model, "Sending completion request to Vertex AI");
+        let (client, _) = self.auth_snapshot().await?;
+
         // Convert messages to Vertex format
         let contents: Vec<_> = request
             .messages
@@ -156,8 +241,7 @@ impl CompletionProvider for VertexProvider {
         };
 
         // Make the API call
-        let response = self
-            .client
+        let response = client
             .generate_content(
                 &self.project_id,
                 &self.location,
@@ -270,8 +354,8 @@ impl ImageGenerationProvider for VertexProvider {
         };
 
         // Make the API call using :predict endpoint (required for Imagen models)
-        let response = self
-            .client
+        let (client, _) = self.auth_snapshot().await?;
+        let response = client
             .predict(
                 &self.project_id,
                 &self.location,
@@ -367,8 +451,8 @@ impl VideoGenerationProvider for VertexProvider {
         };
 
         // Use predictLongRunning endpoint (required for Veo models)
-        let response = self
-            .client
+        let (client, _) = self.auth_snapshot().await?;
+        let response = client
             .predict_long_running(
                 &self.project_id,
                 &self.location,
@@ -446,8 +530,8 @@ impl VertexProvider {
         };
 
         // Call :generateContent via the libgen client
-        let response = self
-            .client
+        let (client, _) = self.auth_snapshot().await?;
+        let response = client
             .generate_content(
                 &self.project_id,
                 &self.location,
@@ -506,10 +590,11 @@ impl VertexProvider {
             bucket_name, prefix
         );
 
+        let (_, bearer_token) = self.auth_snapshot().await?;
         let http_client = reqwest::Client::new();
         let response = http_client
             .get(&url)
-            .header("Authorization", format!("Bearer {}", self.bearer_token))
+            .header("Authorization", format!("Bearer {}", bearer_token))
             .send()
             .await
             .map_err(|e| KalpaError::ProviderError {
@@ -578,10 +663,11 @@ impl VertexProvider {
                 "operationName": operation_name
             });
             
+            let (_, bearer_token) = self.auth_snapshot().await?;
             let http_client = reqwest::Client::new();
             let http_response = http_client
                 .post(&url)
-                .header("Authorization", format!("Bearer {}", self.bearer_token))
+                .header("Authorization", format!("Bearer {}", bearer_token))
                 .header("Content-Type", "application/json")
                 .json(&body)
                 .send()

@@ -2,4 +2,4 @@
 
 pub mod vertex_oauth;
 
-pub use vertex_oauth::VertexAuthToken;
+pub use vertex_oauth::{ServiceAccount, VertexAuthToken};
