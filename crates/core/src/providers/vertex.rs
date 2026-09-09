@@ -12,9 +12,8 @@ use crate::provider::{
     SubmitOutcome, VideoGenerationProvider,
 };
 use crate::types::{
-    CompletionRequest, CompletionResponse, ImageGenerationRequest, ImageGenerationResponse,
-    GeneratedImage, GeneratedVideo, Message, Role, Usage, VideoGenerationRequest,
-    VideoGenerationResponse,
+    CompletionRequest, CompletionResponse, GeneratedImage, GeneratedVideo, ImageGenerationRequest,
+    ImageGenerationResponse, Message, Role, Usage, VideoGenerationRequest, VideoGenerationResponse,
 };
 use std::time::Duration;
 use tokio::time::sleep;
@@ -36,7 +35,12 @@ impl VertexProvider {
     /// * `project_id` - Google Cloud project ID
     /// * `location` - Cloud region (e.g., "us-central1")
     /// * `gcs_bucket` - Optional GCS bucket for outputs (e.g., "gs://my-bucket")
-    pub fn new(bearer_token: String, project_id: String, _location: String, gcs_bucket: Option<String>) -> Self {
+    pub fn new(
+        bearer_token: String,
+        project_id: String,
+        _location: String,
+        gcs_bucket: Option<String>,
+    ) -> Self {
         // Always use the global endpoint — works for all models (Gemini, Imagen, Veo)
         let base_url = "https://aiplatform.googleapis.com";
         let client = vertex::Client::new_with_client(
@@ -116,9 +120,9 @@ impl CompletionProvider for VertexProvider {
     fn supported_models(&self) -> &[&str] {
         &[
             // Latest Gemini models
-            "gemini-3.1-flash",           // Nano Banana 2
-            "gemini-3-pro",               // Nano Banana Pro
-            "gemini-2.5-flash",           // Original Nano Banana
+            "gemini-3.1-flash", // Nano Banana 2
+            "gemini-3-pro",     // Nano Banana Pro
+            "gemini-2.5-flash", // Original Nano Banana
             // Gemini 2.0 series
             "gemini-2.0-flash",
             "gemini-2.0-flash-exp",
@@ -232,9 +236,9 @@ impl ImageGenerationProvider for VertexProvider {
     fn supported_models(&self) -> &[&str] {
         &[
             // Gemini image models (use :generateContent with responseModalities)
-            "gemini-3.1-flash-image",     // Nano Banana 2
-            "gemini-3-pro-image",         // Nano Banana Pro
-            "gemini-2.5-flash-image",     // Nano Banana (original)
+            "gemini-3.1-flash-image", // Nano Banana 2
+            "gemini-3-pro-image",     // Nano Banana Pro
+            "gemini-2.5-flash-image", // Nano Banana (original)
             // Imagen 4.0 (latest)
             "imagen-4.0-generate-001",
             // Imagen 3.0
@@ -250,7 +254,9 @@ impl ImageGenerationProvider for VertexProvider {
     ) -> KalpaResult<ImageGenerationResponse> {
         // Gemini image models use :generateContent with responseModalities
         if request.model.starts_with("gemini-") {
-            return self.generate_image_gemini(&request.model, &request.prompt).await;
+            return self
+                .generate_image_gemini(&request.model, &request.prompt)
+                .await;
         }
 
         // Imagen models use :predict format
@@ -289,10 +295,13 @@ impl ImageGenerationProvider for VertexProvider {
             predictions
                 .iter()
                 .filter_map(|prediction| {
-                    prediction.bytes_base64_encoded.as_ref().map(|data| GeneratedImage {
-                        url: None,
-                        b64_data: Some(data.clone()),
-                    })
+                    prediction
+                        .bytes_base64_encoded
+                        .as_ref()
+                        .map(|data| GeneratedImage {
+                            url: None,
+                            b64_data: Some(data.clone()),
+                        })
                 })
                 .collect()
         } else {
@@ -328,7 +337,7 @@ impl VideoGenerationProvider for VertexProvider {
     ) -> KalpaResult<VideoGenerationResponse> {
         // STEP 1: Generate request_id BEFORE sending the generation request
         let request_id = Uuid::new_v4().to_string();
-        
+
         // Build video generation request using VideoPredictRequest format
         let video_instance = vertex::types::VideoInstance {
             prompt: request.prompt.clone(),
@@ -340,7 +349,8 @@ impl VideoGenerationProvider for VertexProvider {
         let fallback_bucket;
         let bucket_name = if let Some(gcs_uri) = &self.gcs_bucket {
             // Parse "gs://bucket-name/path" to get "bucket-name"
-            gcs_uri.strip_prefix("gs://")
+            gcs_uri
+                .strip_prefix("gs://")
                 .and_then(|s| s.split('/').next())
                 .ok_or_else(|| KalpaError::ProviderError {
                     status: 500,
@@ -351,7 +361,7 @@ impl VideoGenerationProvider for VertexProvider {
             fallback_bucket = format!("{}-kalpa-videos", self.project_id);
             fallback_bucket.as_str()
         };
-        
+
         // Construct storage URI with request_id
         let storage_uri = format!("gs://{}/generations/{}/", bucket_name, request_id);
 
@@ -387,12 +397,12 @@ impl VideoGenerationProvider for VertexProvider {
         // Check if this is a long-running operation
         if let Some(op_name) = &operation_response.name {
             // Poll for operation completion
-            let final_response = self
-                .poll_operation(op_name)
-                .await?;
+            let final_response = self.poll_operation(op_name).await?;
 
             // STEP 3: Extract video data from completed operation using request_id
-            let videos = self.extract_videos_from_operation(&final_response, &request_id, bucket_name).await?;
+            let videos = self
+                .extract_videos_from_operation(&final_response, &request_id, bucket_name)
+                .await?;
 
             Ok(VideoGenerationResponse {
                 videos,
@@ -448,12 +458,7 @@ impl VertexProvider {
         // Call :generateContent via the libgen client
         let response = self
             .client
-            .generate_content(
-                &self.project_id,
-                &self.location,
-                model,
-                &vertex_request,
-            )
+            .generate_content(&self.project_id, &self.location, model, &vertex_request)
             .await
             .map_err(|e| KalpaError::ProviderError {
                 status: 500,
@@ -519,20 +524,26 @@ impl VertexProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
             return Err(KalpaError::ProviderError {
                 status: status.as_u16(),
                 message: format!("GCS listing failed: {} - {}", status, error_text),
             });
         }
 
-        let response_text = response.text().await.map_err(|e| KalpaError::ProviderError {
-            status: 500,
-            message: format!("Failed to read GCS response: {}", e),
-        })?;
-
-        let gcs_response: GcsListResponse = serde_json::from_str(&response_text)
+        let response_text = response
+            .text()
+            .await
             .map_err(|e| KalpaError::ProviderError {
+                status: 500,
+                message: format!("Failed to read GCS response: {}", e),
+            })?;
+
+        let gcs_response: GcsListResponse =
+            serde_json::from_str(&response_text).map_err(|e| KalpaError::ProviderError {
                 status: 500,
                 message: format!("Failed to parse GCS response: {}", e),
             })?;
@@ -571,13 +582,13 @@ impl VertexProvider {
                 "https://aiplatform.googleapis.com/v1/projects/{}/locations/{}/publishers/google/models/{}:fetchPredictOperation",
                 self.project_id, self.location, model_name
             );
-            
+
             // The request body must contain only the operation name
             // The GCS URI is already in the response since we passed storageUri in the initial request
             let body = serde_json::json!({
                 "operationName": operation_name
             });
-            
+
             let http_client = reqwest::Client::new();
             let http_response = http_client
                 .post(&url)
@@ -593,20 +604,27 @@ impl VertexProvider {
 
             let status = http_response.status();
             if !status.is_success() {
-                let error_text = http_response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+                let error_text = http_response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "Unknown error".to_string());
                 return Err(KalpaError::ProviderError {
                     status: status.as_u16(),
                     message: format!("Failed to poll operation: {} - {}", status, error_text),
                 });
             }
 
-            let response_text = http_response.text().await.map_err(|e| KalpaError::ProviderError {
-                status: 500,
-                message: format!("Failed to read response text: {}", e),
-            })?;
+            let response_text =
+                http_response
+                    .text()
+                    .await
+                    .map_err(|e| KalpaError::ProviderError {
+                        status: 500,
+                        message: format!("Failed to read response text: {}", e),
+                    })?;
 
-            let operation_response: vertex::types::OperationResponse = serde_json::from_str(&response_text)
-                .map_err(|e| KalpaError::ProviderError {
+            let operation_response: vertex::types::OperationResponse =
+                serde_json::from_str(&response_text).map_err(|e| KalpaError::ProviderError {
                     status: 500,
                     message: format!("Failed to parse operation response: {}", e),
                 })?;
@@ -642,20 +660,25 @@ impl VertexProvider {
         bucket_name: &str,
     ) -> KalpaResult<Vec<GeneratedVideo>> {
         // Parse the response as raw JSON to handle the nested structure
-        let response_json = serde_json::to_value(response).map_err(|e| KalpaError::ProviderError {
-            status: 500,
-            message: format!("Failed to serialize response: {}", e),
-        })?;
-        
+        let response_json =
+            serde_json::to_value(response).map_err(|e| KalpaError::ProviderError {
+                status: 500,
+                message: format!("Failed to serialize response: {}", e),
+            })?;
+
         // Try to extract GCS URIs from response.generateVideoResponse.generatedSamples[].video.uri
         if let Some(response_obj) = response_json.get("response") {
             // Check for generateVideoResponse (Veo 2.0 format)
             if let Some(video_response) = response_obj.get("generateVideoResponse") {
-                if let Some(samples) = video_response.get("generatedSamples").and_then(|s| s.as_array()) {
+                if let Some(samples) = video_response
+                    .get("generatedSamples")
+                    .and_then(|s| s.as_array())
+                {
                     let videos: Vec<GeneratedVideo> = samples
                         .iter()
                         .filter_map(|sample| {
-                            sample.get("video")
+                            sample
+                                .get("video")
                                 .and_then(|v| v.get("uri"))
                                 .and_then(|u| u.as_str())
                                 .map(|uri| GeneratedVideo {
@@ -663,24 +686,25 @@ impl VertexProvider {
                                 })
                         })
                         .collect();
-                    
+
                     if !videos.is_empty() {
                         return Ok(videos);
                     }
                 }
             }
-            
+
             // Fall back to checking predictions (older format or imagen)
             if let Some(predict_response) = &response.response {
                 if let Some(predictions) = &predict_response.predictions {
                     let videos: Vec<GeneratedVideo> = predictions
                         .iter()
                         .filter_map(|prediction| {
-                            prediction.bytes_base64_encoded.as_ref().map(|data| {
-                                GeneratedVideo {
+                            prediction
+                                .bytes_base64_encoded
+                                .as_ref()
+                                .map(|data| GeneratedVideo {
                                     url: format!("data:video/mp4;base64,{}", data),
-                                }
-                            })
+                                })
                         })
                         .collect();
 
@@ -706,10 +730,8 @@ impl VertexProvider {
             })?;
 
         let video_uri = format!("gs://{}/{}", bucket_name, video.name);
-        
-        Ok(vec![GeneratedVideo {
-            url: video_uri,
-        }])
+
+        Ok(vec![GeneratedVideo { url: video_uri }])
     }
 }
 
@@ -733,7 +755,6 @@ struct GcsObject {
 // otherwise Gemini text via `generateContent` → text parts. Both are
 // synchronous from the caller's view. Veo (video) stays on the legacy
 // VideoGenerationProvider for now.
-
 
 #[async_trait]
 impl GenerationProvider for VertexProvider {
@@ -767,11 +788,18 @@ impl GenerationProvider for VertexProvider {
                     mime: Some("image/png".into()),
                 })
                 .collect();
-            Ok(SubmitOutcome::Sync(GenerationResponse { model, parts, usage: None }))
+            Ok(SubmitOutcome::Sync(GenerationResponse {
+                model,
+                parts,
+                usage: None,
+            }))
         } else {
             let comp_req = CompletionRequest {
                 model: model.clone(),
-                messages: vec![Message { role: Role::User, content: prompt }],
+                messages: vec![Message {
+                    role: Role::User,
+                    content: prompt,
+                }],
                 max_tokens: None,
                 temperature: None,
                 top_p: None,
@@ -787,6 +815,8 @@ impl GenerationProvider for VertexProvider {
     }
 
     async fn poll(&self, _handle: &JobHandle) -> KalpaResult<PollStatus> {
-        Err(KalpaError::Other("vertex generation is synchronous; poll not supported".into()))
+        Err(KalpaError::Other(
+            "vertex generation is synchronous; poll not supported".into(),
+        ))
     }
 }
