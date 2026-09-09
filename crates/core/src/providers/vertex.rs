@@ -500,6 +500,120 @@ impl VertexProvider {
         })
     }
 
+    async fn generate_multimodal_gemini(
+        &self,
+        model: &str,
+        request: &GenerationRequest,
+    ) -> KalpaResult<GenerationResponse> {
+        let mut parts = Vec::new();
+        for p in &request.parts {
+            match p {
+                Part::Text { text } => {
+                    parts.push(vertex::types::Part {
+                        text: Some(text.clone()),
+                        inline_data: None,
+                        file_data: None,
+                    });
+                }
+                Part::Image {
+                    b64_data: Some(data),
+                    mime,
+                    ..
+                } => {
+                    parts.push(vertex::types::Part {
+                        text: None,
+                        inline_data: Some(vertex::types::InlineData {
+                            mime_type: mime.clone().unwrap_or_else(|| "image/png".into()),
+                            data: data.clone(),
+                        }),
+                        file_data: None,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        let contents = vec![vertex::types::Content {
+            role: Some("user".to_string()),
+            parts: Some(parts),
+        }];
+
+        let response_modalities = request
+            .response_modalities
+            .as_ref()
+            .map(|mods| {
+                mods.iter()
+                    .map(|m| match m {
+                        crate::generation::Modality::Image => "IMAGE".to_string(),
+                        crate::generation::Modality::Audio => "AUDIO".to_string(),
+                        _ => "TEXT".to_string(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| vec!["IMAGE".to_string(), "TEXT".to_string()]);
+
+        let generation_config = Some(vertex::types::GenerationConfig {
+            temperature: None,
+            max_output_tokens: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            response_mime_type: None,
+            response_modalities: Some(response_modalities),
+        });
+
+        let vertex_request = vertex::types::GenerateRequest {
+            contents,
+            generation_config,
+            safety_settings: None,
+        };
+
+        let response = self
+            .client
+            .generate_content(&self.project_id, &self.location, model, &vertex_request)
+            .await
+            .map_err(|e| KalpaError::ProviderError {
+                status: 500,
+                message: format!("Vertex Gemini multimodal error: {}", e),
+            })?;
+
+        let mut output_parts = Vec::new();
+        if let Some(candidates) = &response.candidates {
+            for candidate in candidates {
+                if let Some(content) = &candidate.content {
+                    if let Some(parts) = &content.parts {
+                        for part in parts {
+                            if let Some(text) = &part.text {
+                                output_parts.push(Part::Text { text: text.clone() });
+                            }
+                            if let Some(inline_data) = &part.inline_data {
+                                if inline_data.mime_type.starts_with("image/") {
+                                    output_parts.push(Part::Image {
+                                        url: None,
+                                        b64_data: Some(inline_data.data.clone()),
+                                        mime: Some(inline_data.mime_type.clone()),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let usage = response.usage_metadata.as_ref().map(|u| Usage {
+            prompt_tokens: u.prompt_token_count.unwrap_or(0) as u32,
+            completion_tokens: u.candidates_token_count.unwrap_or(0) as u32,
+            total_tokens: u.total_token_count.unwrap_or(0) as u32,
+        });
+
+        Ok(GenerationResponse {
+            model: model.to_string(),
+            parts: output_parts,
+            usage,
+        })
+    }
+
     /// List objects in a GCS bucket with a given prefix using the GCS JSON REST API
     async fn list_gcs_objects(
         &self,
@@ -793,6 +907,13 @@ impl GenerationProvider for VertexProvider {
                 parts,
                 usage: None,
             }))
+        } else if model.contains("image")
+            || request.response_modalities.as_ref().map_or(false, |mods| {
+                mods.contains(&crate::generation::Modality::Image)
+            })
+        {
+            let resp = self.generate_multimodal_gemini(&model, request).await?;
+            Ok(SubmitOutcome::Sync(resp))
         } else {
             let comp_req = CompletionRequest {
                 model: model.clone(),
