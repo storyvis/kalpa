@@ -35,7 +35,11 @@ impl Default for RetryConfig {
 }
 
 /// Determine if an error is retryable.
-fn is_retryable(err: &KalpaError) -> bool {
+///
+/// Safe for *read* operations and for any call the provider is known not to
+/// have acted on. See [`is_rate_limit_rejection`] before using this to retry a
+/// call that starts billable work.
+pub fn is_retryable(err: &KalpaError) -> bool {
     match err {
         KalpaError::Http(_) => true, // Network errors are always retryable
         KalpaError::RateLimited(_) => true,
@@ -43,6 +47,27 @@ fn is_retryable(err: &KalpaError) -> bool {
             // Retry on 429 (rate limit), 500, 502, 503, 504
             matches!(status, 429 | 500 | 502 | 503 | 504)
         }
+        _ => false,
+    }
+}
+
+/// Whether the provider rejected the request outright for rate limiting.
+///
+/// A strict subset of [`is_retryable`], and the only class of failure that is
+/// safe to retry at a *submit* boundary: a 429 means the request was refused,
+/// so no work was started and nothing was billed.
+///
+/// The other `is_retryable` cases are not safe there. A dropped connection
+/// (`Http`) or a 5xx can arrive *after* the provider accepted the job — the
+/// request succeeded and only the response was lost. Retrying then submits a
+/// second generation: the first is billed and orphaned (no handle is ever
+/// returned for it), and the caller pays twice for one image. Without an
+/// idempotency key on the provider API there is no way to tell that case apart
+/// from a genuine "never arrived", so the submit path retries only 429s.
+pub fn is_rate_limit_rejection(err: &KalpaError) -> bool {
+    match err {
+        KalpaError::RateLimited(_) => true,
+        KalpaError::ProviderError { status, .. } => *status == 429,
         _ => false,
     }
 }
@@ -65,13 +90,30 @@ where
     F: Fn() -> Fut,
     Fut: Future<Output = KalpaResult<T>>,
 {
+    retry_if(config, is_retryable, operation).await
+}
+
+/// [`retry_with_backoff`] with an explicit retryability predicate.
+///
+/// Callers that start billable work should pass [`is_rate_limit_rejection`]
+/// rather than the default [`is_retryable`].
+pub async fn retry_if<F, Fut, T, P>(
+    config: RetryConfig,
+    should_retry: P,
+    operation: F,
+) -> KalpaResult<T>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = KalpaResult<T>>,
+    P: Fn(&KalpaError) -> bool,
+{
     let mut backoff = config.initial_backoff;
 
     for attempt in 1..=config.max_attempts {
         match operation().await {
             Ok(result) => return Ok(result),
             Err(err) => {
-                if attempt == config.max_attempts || !is_retryable(&err) {
+                if attempt == config.max_attempts || !should_retry(&err) {
                     return Err(err);
                 }
 
@@ -85,7 +127,8 @@ where
 
                 sleep(backoff).await;
                 backoff = Duration::from_secs_f64(
-                    (backoff.as_secs_f64() * config.multiplier).min(config.max_backoff.as_secs_f64()),
+                    (backoff.as_secs_f64() * config.multiplier)
+                        .min(config.max_backoff.as_secs_f64()),
                 );
             }
         }
