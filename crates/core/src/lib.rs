@@ -5,6 +5,7 @@
 //! to ensure a consistent, production-grade interface.
 
 pub mod auth;
+pub mod catalog;
 pub mod config;
 pub mod dispatcher;
 pub mod error;
@@ -19,6 +20,7 @@ pub mod registry;
 pub mod retry;
 pub mod types;
 
+pub use catalog::{HttpModelCatalog, ModelCatalog, ModelListing};
 pub use config::{KalpaConfig, Provider, ProviderConfig};
 pub use dispatcher::Dispatcher;
 pub use error::{KalpaError, KalpaResult};
