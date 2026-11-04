@@ -24,7 +24,7 @@ pub struct KalpaConfig {
 }
 
 /// Per-provider configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct ProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
@@ -106,7 +106,13 @@ impl Provider {
 
     /// Get all supported providers.
     pub fn all() -> &'static [Provider] {
-        &[Provider::Gemini, Provider::Vertex, Provider::Fal, Provider::OpenAI, Provider::Claude]
+        &[
+            Provider::Gemini,
+            Provider::Vertex,
+            Provider::Fal,
+            Provider::OpenAI,
+            Provider::Claude,
+        ]
     }
 
     /// Human-readable display name.
@@ -143,11 +149,16 @@ impl KalpaConfig {
         }
 
         let content = fs::read_to_string(&path).map_err(|e| {
-            KalpaError::Config(format!("Failed to read config at {}: {}", path.display(), e))
+            KalpaError::Config(format!(
+                "Failed to read config at {}: {}",
+                path.display(),
+                e
+            ))
         })?;
 
-        toml::from_str(&content).map_err(|e| {
-            KalpaError::Config(format!("Failed to parse config: {}", e))
+        toml::from_str(&content).map_err(|_| {
+            // Parser excerpts can contain the API key on the failing line.
+            KalpaError::Config("Failed to parse config.toml".into())
         })
     }
 
@@ -155,16 +166,23 @@ impl KalpaConfig {
     pub fn save(&self) -> KalpaResult<()> {
         let dir = Self::config_dir()?;
         fs::create_dir_all(&dir).map_err(|e| {
-            KalpaError::Config(format!("Failed to create config dir {}: {}", dir.display(), e))
+            KalpaError::Config(format!(
+                "Failed to create config dir {}: {}",
+                dir.display(),
+                e
+            ))
         })?;
 
         let path = Self::config_path()?;
-        let content = toml::to_string_pretty(self).map_err(|e| {
-            KalpaError::Config(format!("Failed to serialize config: {}", e))
-        })?;
+        let content = toml::to_string_pretty(self)
+            .map_err(|e| KalpaError::Config(format!("Failed to serialize config: {}", e)))?;
 
-        fs::write(&path, &content).map_err(|e| {
-            KalpaError::Config(format!("Failed to write config to {}: {}", path.display(), e))
+        write_private(&path, content.as_bytes()).map_err(|e| {
+            KalpaError::Config(format!(
+                "Failed to write config to {}: {}",
+                path.display(),
+                e
+            ))
         })?;
 
         Ok(())
@@ -256,5 +274,53 @@ impl KalpaConfig {
             Provider::Vertex => self.get_service_account_path(provider).is_some(),
             _ => self.get_api_key(provider).is_some(),
         }
+    }
+}
+
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderConfig")
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("default_model", &self.default_model)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Atomic, owner-only writes prevent torn config/jobs and exposure to other users.
+pub(crate) fn write_private(path: &std::path::Path, content: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file =
+        tempfile::NamedTempFile::new_in(path.parent().unwrap_or(std::path::Path::new(".")))?;
+    file.write_all(content)?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod secret_tests {
+    use super::*;
+    #[test]
+    fn debug_redacts_api_key() {
+        let config = ProviderConfig {
+            api_key: Some("sensitive-api-key".into()),
+            ..Default::default()
+        };
+        assert!(!format!("{config:?}").contains("sensitive-api-key"));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn config_write_is_private_even_when_replacing_public_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        write_private(&path, b"secret").unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"secret");
     }
 }

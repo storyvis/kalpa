@@ -1,7 +1,5 @@
 //! OpenAI provider implementation.
 
-use async_trait::async_trait;
-use kalpa_libgen::openai;
 use crate::error::{KalpaError, KalpaResult};
 use crate::generation::{GenerationRequest, GenerationResponse, Part};
 use crate::http::check_response;
@@ -10,9 +8,11 @@ use crate::provider::{
     SubmitOutcome,
 };
 use crate::types::{
-    CompletionRequest, CompletionResponse, ImageGenerationRequest, ImageGenerationResponse,
-    GeneratedImage, Message, Role, Usage,
+    CompletionRequest, CompletionResponse, GeneratedImage, ImageGenerationRequest,
+    ImageGenerationResponse, Message, Role, Usage,
 };
+use async_trait::async_trait;
+use kalpa_libgen::openai;
 
 /// OpenAI provider for GPT models, DALL-E, and Sora.
 pub struct OpenAIProvider {
@@ -28,13 +28,12 @@ impl OpenAIProvider {
     /// # Arguments
     /// * `api_key` - OpenAI API key
     pub fn new(api_key: String) -> Self {
-        let http = reqwest::Client::builder()
+        let http = crate::http::client_builder()
             .default_headers({
                 let mut headers = reqwest::header::HeaderMap::new();
                 headers.insert(
                     reqwest::header::AUTHORIZATION,
-                    reqwest::header::HeaderValue::from_str(&format!("Bearer {}", api_key))
-                        .unwrap(),
+                    crate::http::secret_header(&format!("Bearer {}", api_key)),
                 );
                 headers
             })
@@ -92,7 +91,8 @@ impl CompletionProvider for OpenAIProvider {
             model: request.model.clone(),
             messages,
             temperature: request.temperature.map(|t| t as f64),
-            max_tokens: request.max_tokens.map(|t| t as i64),
+            max_tokens: None,
+            max_completion_tokens: request.max_tokens.map(|t| t as i64),
         };
 
         // Make the API call
@@ -100,10 +100,7 @@ impl CompletionProvider for OpenAIProvider {
             .client
             .chat_completions(&openai_request)
             .await
-            .map_err(|e| KalpaError::ProviderError {
-                status: 500,
-                message: format!("OpenAI API error: {}", e),
-            })?;
+            .map_err(crate::http::generated_error)?;
 
         // Extract the response
         let choice = response
@@ -124,8 +121,8 @@ impl CompletionProvider for OpenAIProvider {
             })?;
 
         let usage = response.usage.as_ref().map(|u| Usage {
-            prompt_tokens: u.input_tokens.unwrap_or(0) as u32,
-            completion_tokens: u.output_tokens.unwrap_or(0) as u32,
+            prompt_tokens: u.prompt_tokens.unwrap_or(0) as u32,
+            completion_tokens: u.completion_tokens.unwrap_or(0) as u32,
             total_tokens: u.total_tokens.unwrap_or(0) as u32,
         });
 
@@ -166,7 +163,7 @@ impl ImageGenerationProvider for OpenAIProvider {
         &[
             "dall-e-3",
             "dall-e-2",
-            "gpt-image-1.5",  // If this is a real model
+            "gpt-image-1.5", // If this is a real model
         ]
     }
 
@@ -178,7 +175,7 @@ impl ImageGenerationProvider for OpenAIProvider {
         let openai_request = openai::types::ImageGenerationRequest {
             model: request.model.clone(),
             prompt: request.prompt.clone(),
-            n: Some(1),
+            n: std::num::NonZeroU64::new(1),
             size: request.size.clone(),
         };
 
@@ -187,10 +184,7 @@ impl ImageGenerationProvider for OpenAIProvider {
             .client
             .create_image(&openai_request)
             .await
-            .map_err(|e| KalpaError::ProviderError {
-                status: 500,
-                message: format!("OpenAI image generation error: {}", e),
-            })?;
+            .map_err(crate::http::generated_error)?;
 
         // Extract images
         let images: Vec<GeneratedImage> = response
@@ -213,7 +207,6 @@ impl ImageGenerationProvider for OpenAIProvider {
 //
 // dall-e / gpt-image models → image (sync, url or b64 parts); other models →
 // chat (sync, text part).
-
 
 #[async_trait]
 impl GenerationProvider for OpenAIProvider {
@@ -247,11 +240,18 @@ impl GenerationProvider for OpenAIProvider {
                     mime: Some("image/png".into()),
                 })
                 .collect();
-            Ok(SubmitOutcome::Sync(GenerationResponse { model, parts, usage: None }))
+            Ok(SubmitOutcome::Sync(GenerationResponse {
+                model,
+                parts,
+                usage: None,
+            }))
         } else {
             let comp_req = CompletionRequest {
                 model: model.clone(),
-                messages: vec![Message { role: Role::User, content: prompt }],
+                messages: vec![Message {
+                    role: Role::User,
+                    content: prompt,
+                }],
                 max_tokens: None,
                 temperature: None,
                 top_p: None,
@@ -267,7 +267,9 @@ impl GenerationProvider for OpenAIProvider {
     }
 
     async fn poll(&self, _handle: &JobHandle) -> KalpaResult<PollStatus> {
-        Err(KalpaError::Other("openai generation is synchronous; poll not supported".into()))
+        Err(KalpaError::Other(
+            "openai generation is synchronous; poll not supported".into(),
+        ))
     }
 }
 
@@ -304,7 +306,7 @@ impl SpeechProvider for OpenAIProvider {
         let resp = check_response(resp, "openai").await?;
 
         use base64::Engine;
-        let bytes = resp.bytes().await?;
+        let bytes = crate::http::read_bounded(resp, crate::http::MAX_RESPONSE_BYTES).await?;
         let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
         let mime = match format.as_str() {
             "wav" => "audio/wav",
@@ -336,13 +338,13 @@ impl TranscriptionProvider for OpenAIProvider {
         let model = request.model.split().1.to_string();
 
         // Fetch the audio bytes (uploaded/stored separately, referenced by URL).
-        let audio = reqwest::get(&request.audio_url).await?.bytes().await?;
+        let audio = crate::http::download_public_audio(&request.audio_url).await?;
 
         let mut form = reqwest::multipart::Form::new()
             .text("model", model.clone())
             .part(
                 "file",
-                reqwest::multipart::Part::bytes(audio.to_vec()).file_name("audio"),
+                reqwest::multipart::Part::bytes(audio).file_name("audio"),
             );
         if let Some(lang) = &request.language {
             form = form.text("language", lang.clone());
@@ -360,7 +362,7 @@ impl TranscriptionProvider for OpenAIProvider {
         struct TranscriptionResponse {
             text: String,
         }
-        let parsed: TranscriptionResponse = resp.json().await?;
+        let parsed: TranscriptionResponse = crate::http::read_json(resp).await?;
         Ok(GenerationResponse {
             model,
             parts: vec![Part::Text { text: parsed.text }],

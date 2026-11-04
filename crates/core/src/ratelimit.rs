@@ -52,7 +52,7 @@ impl Default for AimdConfig {
 
 /// AIMD concurrency limiter for a single binding.
 pub struct AimdLimiter {
-    config: AimdConfig,
+    config: RwLock<AimdConfig>,
     limit: AtomicU32,
     in_flight: AtomicU32,
     /// EWMA of completion latency in millis; 0 = unset.
@@ -63,16 +63,37 @@ pub struct AimdLimiter {
 
 impl AimdLimiter {
     /// Create a limiter from a seed config.
-    pub fn new(config: AimdConfig) -> Arc<Self> {
-        let initial = config.initial.clamp(config.min.max(1), config.max.max(1));
+    pub fn new(mut config: AimdConfig) -> Arc<Self> {
+        config.max = config.max.max(1);
+        config.min = config.min.clamp(1, config.max);
+        if !config.decrease_factor.is_finite() || !(0.0..1.0).contains(&config.decrease_factor) {
+            config.decrease_factor = 0.5;
+        }
+        if !config.latency_threshold.is_finite() || config.latency_threshold <= 1.0 {
+            config.latency_threshold = 2.0;
+        }
+        let initial = config.initial.clamp(config.min, config.max);
         Arc::new(Self {
-            config,
+            config: RwLock::new(config),
             limit: AtomicU32::new(initial),
             in_flight: AtomicU32::new(0),
             baseline_ms: AtomicU64::new(0),
             last_decrease: Mutex::new(None),
             notify: Notify::new(),
         })
+    }
+
+    fn reconfigure(&self, config: AimdConfig) {
+        let normalized = Self::new(config);
+        let config = normalized.config.read().unwrap().clone();
+        let mut current = self.config.write().unwrap();
+        self.limit
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |limit| {
+                Some(limit.clamp(config.min, config.max))
+            })
+            .unwrap();
+        *current = config;
+        self.notify.notify_waiters();
     }
 
     /// Current concurrency limit (for observability / logs).
@@ -89,6 +110,11 @@ impl AimdLimiter {
     /// for the whole unit of work and released (decrementing `in_flight`) on drop.
     pub async fn acquire(self: &Arc<Self>) -> Permit {
         loop {
+            // Register before checking capacity: several releases before await
+            // must wake several waiters, not coalesce into one stored notification.
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             let limit = self.limit.load(Ordering::Acquire);
             let cur = self.in_flight.load(Ordering::Acquire);
             if cur < limit {
@@ -106,7 +132,7 @@ impl AimdLimiter {
                 }
                 // lost the race, retry
             } else {
-                self.notify.notified().await;
+                notified.await;
             }
         }
     }
@@ -125,18 +151,17 @@ impl AimdLimiter {
             return;
         }
         if permit.saturated {
+            let config = self.config.read().unwrap();
             let mut cur = self.limit.load(Ordering::Acquire);
             loop {
-                let next = (cur + 1).min(self.config.max);
+                let next = cur.saturating_add(1).min(config.max);
                 if next == cur {
                     break;
                 }
-                match self.limit.compare_exchange(
-                    cur,
-                    next,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                ) {
+                match self
+                    .limit
+                    .compare_exchange(cur, next, Ordering::AcqRel, Ordering::Acquire)
+                {
                     Ok(_) => {
                         self.notify.notify_one();
                         break;
@@ -164,7 +189,7 @@ impl AimdLimiter {
 
     /// Update the latency EWMA and return whether the gradient has tripped.
     fn observe_latency(&self, latency: Duration) -> bool {
-        let ms = latency.as_millis() as u64;
+        let ms = latency.as_millis().min(u64::MAX as u128) as u64;
         if ms == 0 {
             return false;
         }
@@ -174,18 +199,19 @@ impl AimdLimiter {
             return false;
         }
         // EWMA (alpha = 1/8) for the running baseline.
-        let ewma = (prev * 7 + ms) / 8;
+        let ewma = ((u128::from(prev) * 7 + u128::from(ms)) / 8) as u64;
         self.baseline_ms.store(ewma, Ordering::Release);
-        (ms as f64) > (prev as f64) * self.config.latency_threshold
+        (ms as f64) > (prev as f64) * self.config.read().unwrap().latency_threshold
     }
 
     /// Multiplicative decrease, debounced by `cooldown`.
     fn decrease(&self) {
+        let config = self.config.read().unwrap();
         {
             let mut last = self.last_decrease.lock().unwrap();
             let now = Instant::now();
             if let Some(t) = *last {
-                if now.duration_since(t) < self.config.cooldown {
+                if now.duration_since(t) < config.cooldown {
                     return; // within cooldown — count this burst once
                 }
             }
@@ -193,8 +219,7 @@ impl AimdLimiter {
         }
         let mut cur = self.limit.load(Ordering::Acquire);
         loop {
-            let next = ((cur as f64 * self.config.decrease_factor).floor() as u32)
-                .max(self.config.min);
+            let next = ((cur as f64 * config.decrease_factor).floor() as u32).max(config.min);
             if next == cur {
                 break;
             }
@@ -223,14 +248,18 @@ pub struct BindingSpec {
 /// nested under a per-provider parent that guards the provider's shared account
 /// quota. A call acquires the parent permit then the binding permit.
 pub struct LimiterRegistry {
-    bindings: RwLock<HashMap<String, Arc<AimdLimiter>>>,
+    bindings: RwLock<HashMap<(String, String, Option<String>), Arc<AimdLimiter>>>,
     providers: RwLock<HashMap<String, Arc<AimdLimiter>>>,
     provider_defaults: HashMap<String, AimdConfig>,
     global_default: AimdConfig,
 }
 
-fn binding_key(provider: &str, slug: &str, region: Option<&str>) -> String {
-    format!("{provider}:{slug}:{}", region.unwrap_or(""))
+fn binding_key(
+    provider: &str,
+    slug: &str,
+    region: Option<&str>,
+) -> (String, String, Option<String>) {
+    (provider.into(), slug.into(), region.map(str::to_owned))
 }
 
 impl LimiterRegistry {
@@ -263,10 +292,13 @@ impl LimiterRegistry {
     pub fn upsert_binding(&self, spec: &BindingSpec) {
         let cfg = self.config_for(&spec.provider, spec.config.as_ref());
         let key = binding_key(&spec.provider, &spec.provider_slug, spec.region.as_deref());
-        self.bindings
-            .write()
-            .unwrap()
-            .insert(key, AimdLimiter::new(cfg));
+        let mut bindings = self.bindings.write().unwrap();
+        if let Some(limiter) = bindings.get(&key) {
+            limiter.reconfigure(cfg);
+        } else {
+            bindings.insert(key, AimdLimiter::new(cfg));
+        }
+        drop(bindings);
         // Ensure the provider parent exists.
         self.provider_parent(&spec.provider);
     }
@@ -367,7 +399,10 @@ mod tests {
 
     #[tokio::test]
     async fn ai_only_when_saturated() {
-        let l = AimdLimiter::new(AimdConfig { initial: 2, ..cfg() });
+        let l = AimdLimiter::new(AimdConfig {
+            initial: 2,
+            ..cfg()
+        });
         // Fill to the ceiling: two permits, second is saturated.
         let _p1 = l.acquire().await;
         let p2 = l.acquire().await;
@@ -379,7 +414,12 @@ mod tests {
     #[tokio::test]
     async fn registry_shares_provider_parent() {
         let reg = LimiterRegistry::new(
-            AimdConfig { initial: 2, min: 1, max: 2, ..cfg() },
+            AimdConfig {
+                initial: 2,
+                min: 1,
+                max: 2,
+                ..cfg()
+            },
             std::collections::HashMap::new(),
         );
         let (p1, b1) = reg.limiter_for("fal", "model-a", None);
@@ -402,9 +442,94 @@ mod tests {
         let l = AimdLimiter::new(cfg());
         let p = l.acquire().await;
         l.on_completed(&p, Duration::from_millis(100)); // sets baseline 100
-        // A much slower completion trips the gradient → decrease, no increase.
+                                                        // A much slower completion trips the gradient → decrease, no increase.
         let p2 = l.acquire().await;
         l.on_completed(&p2, Duration::from_millis(500));
         assert!(l.limit() < 8);
+    }
+    #[test]
+    fn invalid_config_preserves_positive_bounded_capacity() {
+        let limiter = AimdLimiter::new(AimdConfig {
+            initial: 0,
+            min: 10,
+            max: 0,
+            decrease_factor: f64::NAN,
+            ..cfg()
+        });
+        assert!(limiter.limit() > 0);
+        limiter.on_submit_rejected(None);
+        assert!(limiter.limit() > 0);
+    }
+
+    #[test]
+    fn zero_floor_cannot_remove_last_slot() {
+        let limiter = AimdLimiter::new(AimdConfig {
+            initial: 1,
+            min: 0,
+            max: 1,
+            ..cfg()
+        });
+        limiter.on_submit_rejected(None);
+        assert_eq!(limiter.limit(), 1);
+    }
+
+    #[tokio::test]
+    async fn hot_reload_preserves_outstanding_permits() {
+        let registry = LimiterRegistry::new(cfg(), HashMap::new());
+        let (_, before) = registry.limiter_for("fal", "model", None);
+        let permit = before.acquire().await;
+        registry.upsert_binding(&BindingSpec {
+            provider: "fal".into(),
+            provider_slug: "model".into(),
+            region: None,
+            config: Some(AimdConfig {
+                initial: 1,
+                min: 1,
+                max: 1,
+                ..cfg()
+            }),
+        });
+        let (_, after) = registry.limiter_for("fal", "model", None);
+        assert!(Arc::ptr_eq(&before, &after));
+        assert_eq!(after.in_flight(), 1);
+        assert_eq!(after.limit(), 1);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), after.acquire())
+                .await
+                .is_err()
+        );
+        drop(permit);
+        let _permit = tokio::time::timeout(Duration::from_secs(1), after.acquire())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_waiters_do_not_lose_releases() {
+        let limiter = AimdLimiter::new(AimdConfig {
+            initial: 4,
+            min: 4,
+            max: 4,
+            ..cfg()
+        });
+        let mut tasks = Vec::new();
+        for _ in 0..64 {
+            let limiter = Arc::clone(&limiter);
+            tasks.push(tokio::spawn(async move {
+                for _ in 0..100 {
+                    let _permit = limiter.acquire().await;
+                    assert!(limiter.in_flight() <= 4);
+                    tokio::task::yield_now().await;
+                }
+            }));
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            for task in tasks {
+                task.await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(limiter.in_flight(), 0);
     }
 }

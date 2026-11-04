@@ -8,6 +8,8 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+http = "1"
+thiserror.workspace = true
 anyhow.workspace = true
 progenitor-client.workspace = true
 reqwest.workspace = true
@@ -21,3 +23,6 @@ progenitor = { workspace = true }
 prettyplease = "0.2"
 serde_json.workspace = true
 syn = "2"
+
+[dev-dependencies]
+tokio.workspace = true

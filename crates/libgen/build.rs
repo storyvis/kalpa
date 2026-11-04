@@ -58,28 +58,45 @@ fn generate_sdk(spec_path: &Path, name: &str, out_dir: &Path) {
 
     let output_path = out_dir.join(format!("{}.rs", name));
     let mut content = tokens.to_string();
+    // Fail closed if a Progenitor upgrade changes this boundary: no generated
+    // operation may bypass the bounded body reader. Its public hooks only borrow.
+    let response_boundary = "let response = result ? ;";
+    let operations = spec
+        .paths
+        .iter()
+        .map(|(_, item)| item.as_item().map(|item| item.iter().count()).unwrap_or(0))
+        .sum::<usize>();
+    assert_eq!(
+        content.matches(response_boundary).count(),
+        operations,
+        "Generated response boundary changed for {name}"
+    );
+    content = content.replace(
+        response_boundary,
+        "let response = crate :: bounded_response (result ?) . await ? ;",
+    );
 
-    // Special handling for falai: remove encode_path() for model_id to preserve slashes
-    // Apply patch on raw token output BEFORE formatting (no line breaks in token stream)
+    // Fal model IDs contain multiple segments; preserve only their separators.
+    // Keep request IDs encoded and fail closed on generator changes.
     if name == "falai" {
-        let before_count = content.matches("encode_path").count();
-        // Replace all encode_path calls - model_id contains slashes, request_id is UUID (safe)
-        content = content.replace("encode_path (& model_id . to_string ())", "model_id");
-        content = content.replace("encode_path (& request_id . to_string ())", "& request_id");
-        let after_count = content.matches("encode_path").count();
-        eprintln!("cargo:warning=Applied falai-specific patch: disabled path encoding ({} replacements)", before_count - after_count);
+        let model_boundary = "encode_path (& model_id . to_string ())";
+        assert_eq!(
+            content.matches(model_boundary).count(),
+            operations,
+            "Fal model path boundary changed"
+        );
+        content = content.replace(model_boundary, "crate :: encode_model_path (model_id) ?");
     }
 
     // Format with prettyplease for readable output
-    let ast = syn::parse_file(&content).unwrap_or_else(|e| {
-        // If parsing fails, write unformatted
-        eprintln!("cargo:warning=Failed to parse generated code for {}: {}", name, e);
-        fs::write(&output_path, &content).expect("Failed to write generated SDK");
-        return syn::parse_file("").unwrap();
-    });
+    let ast = syn::parse_file(&content)
+        .unwrap_or_else(|e| panic!("Failed to parse generated code for {name}: {e}"));
 
     let formatted = prettyplease::unparse(&ast);
     fs::write(&output_path, formatted).expect("Failed to write generated SDK");
 
-    eprintln!("cargo:warning=Generated SDK for '{}' at {:?}", name, output_path);
+    eprintln!(
+        "cargo:warning=Generated SDK for '{}' at {:?}",
+        name, output_path
+    );
 }

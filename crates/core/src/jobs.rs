@@ -1,9 +1,9 @@
 //! Job tracking system for async generation tasks.
 
+use crate::error::{KalpaError, KalpaResult};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use crate::error::{KalpaError, KalpaResult};
 
 /// Job status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -56,25 +56,19 @@ pub struct Job {
 
 impl Job {
     /// Create a new job
-    pub fn new(
-        job_type: JobType,
-        provider: String,
-        model: String,
-        prompt: String,
-    ) -> Self {
+    pub fn new(job_type: JobType, provider: String, model: String, prompt: String) -> Self {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
-        
+
         let id = format!(
-            "{}_{}_{}", 
+            "{}_{}",
             match job_type {
                 JobType::Image => "img",
                 JobType::Video => "vid",
             },
-            &provider[..3.min(provider.len())],
-            now
+            uuid::Uuid::new_v4()
         );
 
         Self {
@@ -97,7 +91,7 @@ impl Job {
         self.status = status;
         self.updated_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
     }
 
@@ -107,7 +101,7 @@ impl Job {
         self.result_path = Some(result_path);
         self.updated_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
     }
 
@@ -117,7 +111,7 @@ impl Job {
         self.error = Some(error);
         self.updated_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
     }
 }
@@ -128,6 +122,18 @@ pub struct JobStore {
 }
 
 impl JobStore {
+    fn job_path(&self, job_id: &str) -> KalpaResult<PathBuf> {
+        if job_id.is_empty()
+            || job_id.len() > 128
+            || !job_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Err(KalpaError::Config("Invalid job ID".into()));
+        }
+        Ok(self.jobs_dir.join(format!("{job_id}.json")))
+    }
+
     /// Create a new job store
     pub fn new() -> KalpaResult<Self> {
         let jobs_dir = dirs::data_local_dir()
@@ -135,42 +141,37 @@ impl JobStore {
             .join("kalpa")
             .join("jobs");
 
-        std::fs::create_dir_all(&jobs_dir).map_err(|e| {
-            KalpaError::Config(format!("Failed to create jobs directory: {}", e))
-        })?;
+        std::fs::create_dir_all(&jobs_dir)
+            .map_err(|e| KalpaError::Config(format!("Failed to create jobs directory: {}", e)))?;
 
         Ok(Self { jobs_dir })
     }
 
     /// Save a job
     pub fn save(&self, job: &Job) -> KalpaResult<()> {
-        let job_file = self.jobs_dir.join(format!("{}.json", job.id));
-        let json = serde_json::to_string_pretty(job).map_err(|e| {
-            KalpaError::Config(format!("Failed to serialize job: {}", e))
-        })?;
+        let job_file = self.job_path(&job.id)?;
+        let json = serde_json::to_string_pretty(job)
+            .map_err(|e| KalpaError::Config(format!("Failed to serialize job: {}", e)))?;
 
-        std::fs::write(&job_file, json).map_err(|e| {
-            KalpaError::Config(format!("Failed to write job file: {}", e))
-        })?;
+        crate::config::write_private(&job_file, json.as_bytes())
+            .map_err(|e| KalpaError::Config(format!("Failed to write job file: {}", e)))?;
 
         Ok(())
     }
 
     /// Load a job by ID
     pub fn load(&self, job_id: &str) -> KalpaResult<Job> {
-        let job_file = self.jobs_dir.join(format!("{}.json", job_id));
-        
+        let job_file = self.job_path(job_id)?;
+
         if !job_file.exists() {
             return Err(KalpaError::Config(format!("Job not found: {}", job_id)));
         }
 
-        let json = std::fs::read_to_string(&job_file).map_err(|e| {
-            KalpaError::Config(format!("Failed to read job file: {}", e))
-        })?;
+        let json = std::fs::read_to_string(&job_file)
+            .map_err(|e| KalpaError::Config(format!("Failed to read job file: {}", e)))?;
 
-        let job: Job = serde_json::from_str(&json).map_err(|e| {
-            KalpaError::Config(format!("Failed to parse job file: {}", e))
-        })?;
+        let job: Job = serde_json::from_str(&json)
+            .map_err(|e| KalpaError::Config(format!("Failed to parse job file: {}", e)))?;
 
         Ok(job)
     }
@@ -179,9 +180,9 @@ impl JobStore {
     pub fn list(&self) -> KalpaResult<Vec<Job>> {
         let mut jobs = Vec::new();
 
-        for entry in std::fs::read_dir(&self.jobs_dir).map_err(|e| {
-            KalpaError::Config(format!("Failed to read jobs directory: {}", e))
-        })? {
+        for entry in std::fs::read_dir(&self.jobs_dir)
+            .map_err(|e| KalpaError::Config(format!("Failed to read jobs directory: {}", e)))?
+        {
             let entry = entry.map_err(|e| {
                 KalpaError::Config(format!("Failed to read directory entry: {}", e))
             })?;
@@ -204,14 +205,39 @@ impl JobStore {
 
     /// Delete a job
     pub fn delete(&self, job_id: &str) -> KalpaResult<()> {
-        let job_file = self.jobs_dir.join(format!("{}.json", job_id));
-        
+        let job_file = self.job_path(job_id)?;
+
         if job_file.exists() {
-            std::fs::remove_file(&job_file).map_err(|e| {
-                KalpaError::Config(format!("Failed to delete job file: {}", e))
-            })?;
+            std::fs::remove_file(&job_file)
+                .map_err(|e| KalpaError::Config(format!("Failed to delete job file: {}", e)))?;
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn ids_are_unique_and_unicode_safe() {
+        let a = Job::new(JobType::Image, "🌍".into(), "model".into(), "prompt".into());
+        let b = Job::new(JobType::Image, "🌍".into(), "model".into(), "prompt".into());
+        assert_ne!(a.id, b.id);
+    }
+    #[test]
+    fn store_rejects_path_traversal() {
+        let store = JobStore {
+            jobs_dir: std::env::temp_dir(),
+        };
+        assert!(store.delete("../kalpa-invalid-job").is_err());
+        let mut job = Job::new(
+            JobType::Image,
+            "fal".into(),
+            "model".into(),
+            "prompt".into(),
+        );
+        job.id = "../kalpa-invalid-job".into();
+        assert!(store.save(&job).is_err());
     }
 }

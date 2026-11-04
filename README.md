@@ -426,3 +426,9 @@ For citation requests or questions, contact:
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) for the full text.
+
+
+Provider schema provenance and offline regeneration are documented in
+[`crates/libgen/specs/README.md`](crates/libgen/specs/README.md). Transport limits,
+credential handling, dependency changes and validation are recorded in the
+[2026-11-04 hardening review](docs/HARDENING_2026-11-04.md).

@@ -7,7 +7,7 @@ use thiserror::Error;
 pub enum KalpaError {
     /// HTTP/network-level error from the underlying client.
     #[error("HTTP error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
 
     /// Serialization/deserialization error.
     #[error("Serialization error: {0}")]
@@ -36,3 +36,9 @@ pub enum KalpaError {
 
 /// A convenience Result type for kalpa operations.
 pub type KalpaResult<T> = Result<T, KalpaError>;
+
+impl From<reqwest::Error> for KalpaError {
+    fn from(error: reqwest::Error) -> Self {
+        Self::Http(error.without_url())
+    }
+}
