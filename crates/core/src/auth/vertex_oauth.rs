@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Google service account credentials from JSON file
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct ServiceAccount {
     #[serde(rename = "type")]
     pub account_type: String,
@@ -79,11 +79,18 @@ impl VertexAuthToken {
         }
     }
 
-    /// Refresh the token if needed
+    /// Re-exchange a JWT for a fresh access token when expired (or within 60s of expiry).
+    pub async fn refresh_if_needed_sa(&mut self, sa: &ServiceAccount) -> KalpaResult<()> {
+        if self.is_expired() {
+            *self = Self::from_service_account(sa.clone()).await?;
+        }
+        Ok(())
+    }
+
+    /// Refresh the token if needed, reloading the service account from disk.
     pub async fn refresh_if_needed(&mut self, service_account_path: &Path) -> KalpaResult<()> {
         if self.is_expired() {
-            let new_token = Self::from_service_account_file(service_account_path).await?;
-            *self = new_token;
+            *self = Self::from_service_account_file(service_account_path).await?;
         }
         Ok(())
     }
@@ -156,7 +163,7 @@ fn sign_rs256(message: &str, private_key_pem: &str) -> KalpaResult<Vec<u8>> {
 }
 
 /// Token response from Google OAuth
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
     expires_in: u64,
@@ -256,5 +263,19 @@ mod tests {
             .verify(b"test assertion", &signature)
             .unwrap();
         }
+    }
+    #[tokio::test]
+    async fn fresh_token_does_not_reload_credentials_from_disk() {
+        let mut token = VertexAuthToken {
+            access_token: "cached-secret-token".into(),
+            expires_at: SystemTime::now() + Duration::from_secs(3600),
+            project_id: "test-project".into(),
+        };
+        token
+            .refresh_if_needed(Path::new("/nonexistent/kalpa-service-account.json"))
+            .await
+            .unwrap();
+        assert_eq!(token.access_token, "cached-secret-token");
+        assert!(!format!("{token:?}").contains("cached-secret-token"));
     }
 }

@@ -28,7 +28,7 @@ changes were used for validation.
   client; proxies and redirects are disabled. Legacy HTTP/internal audio URLs now
   fail. Callers that need local audio should supply an upload flow outside this
   downloader, rather than weakening its SSRF policy.
-- Dispatcher generations have a configurable 15-minute deadline including admission.
+- Dispatcher generations have a configurable 15-minute deadline including admission, speech and transcription.
   Poll-time 429/503/timeouts back off without reducing admission. Submit-time
   back-pressure and successful completions adapt both provider and binding limits.
   Binding admission happens before taking shared provider capacity. Known Fal jobs
@@ -41,7 +41,7 @@ changes were used for validation.
 - Invalid retry configurations return errors instead of panicking. Only connection
   errors/timeouts, rate limits and selected 5xx responses are retried. Retry logs
   omit provider error bodies. Callers remain responsible for idempotency when using
-  the generic retry helper; generation submission is not automatically retried.
+  the generic retry helper; generation submission retries only explicit 429 rejections, preserving the upstream idempotency policy.
 - Job IDs use UUIDs, do not slice UTF-8 provider names and cannot traverse paths.
   Job/config writes replace files atomically with owner-only permissions on Unix.
 - OAuth allows only documented Google token endpoints. RS256 signing uses `ring`
@@ -72,7 +72,7 @@ upstream specification.
 
 - Six focused baseline tests failed before fixes: invalid limiter min/max and zero
   floor, retry zero attempts/invalid multiplier, Unicode job ID and path traversal.
-- `cargo test --workspace --locked`: 43 passing tests (34 core, five generated wire
+- `cargo test --workspace --locked`: 57 passing tests (43 core, five catalog integration tests, five generated wire
   contracts, four loopback generated HTTP tests), plus the pre-existing ignored
   retry documentation example. A separately invoked ignored microbenchmark checks
   the connection-reuse improvement: 100 loopback requests opened 100 connections
@@ -106,9 +106,14 @@ cover implemented operations and selected fields. Vertex model-specific predicti
 payloads remain documented local overlays. Existing model aliases may refer to
 retired models; they are not silently remapped to another paid model.
 
-Vertex providers constructed with a bearer-token string still rely on the caller to
-refresh/rebuild them before expiry; no shared global token cache is introduced.
-The existing global-endpoint selection remains unchanged. Cancellation is best-effort, requires a known job handle and a live Tokio runtime, and providers without
+The upstream Vertex service-account token cache and serialized refresh APIs are
+preserved and tested with concurrent callers, failed refresh and fresh credentials.
+Providers constructed with only a bearer-token string still rely on the caller to
+rotate that token. The existing global-endpoint selection remains unchanged.
+Slurm generation and model-catalog APIs from origin/main f1dc241 are retained;
+Slurm helper clients now also disable redirects, mark credentials sensitive and
+apply 10-second connection/30-second request deadlines. Existing Slurm schemas are
+preserved; this refresh does not claim a newly acquired Slurm API version. Cancellation is best-effort, requires a known job handle and a live Tokio runtime, and providers without
 cancel support retain the trait's default behavior. An interrupted submission whose
 response never supplies a handle cannot be cancelled reliably. Existing unrelated
 compiler warnings in CLI authentication and Fal image dimensions remain.

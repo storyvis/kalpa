@@ -124,3 +124,10 @@ pub fn encode_model_path<E>(model: &str) -> Result<String, progenitor_client::Er
         .collect::<Vec<_>>()
         .join("/"))
 }
+
+pub mod slurm_auth;
+pub use slurm_auth::{slurm_client, slurm_client_bearer};
+/// Slurm REST client from the existing pinned slurmrestd schema.
+pub mod slurm {
+    include!(concat!(env!("OUT_DIR"), "/slurm.rs"));
+}

@@ -3,7 +3,6 @@
 use clap::{Args, Subcommand};
 use colored::Colorize;
 use kalpa_core::{KalpaConfig, Provider};
-use kalpa_core::auth::VertexAuthToken;
 use kalpa_core::provider::ImageGenerationProvider;
 use kalpa_core::providers::VertexProvider;
 use kalpa_core::types::ImageGenerationRequest;
@@ -909,8 +908,6 @@ async fn generate_image_vertex(
     prompt: &str,
     json_output: bool,
 ) -> anyhow::Result<()> {
-    use std::path::Path;
-    
     // Get service account path
     let service_account_path = config
         .get_service_account_path(Provider::Vertex)
@@ -932,23 +929,16 @@ async fn generate_image_vertex(
         );
     }
 
-    // Get OAuth token
-    let auth_token = VertexAuthToken::from_service_account_file(Path::new(service_account_path))
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to authenticate with Vertex AI: {}", e))?;
-
-    let project_id = auth_token.project_id.clone();
-
-    // Get GCS bucket from config
     let gcs_bucket = config.get_gcs_bucket(Provider::Vertex).map(|s| s.to_string());
 
-    // Create Vertex provider
-    let provider = VertexProvider::new(
-        auth_token.access_token,
-        project_id.clone(),
+    // Create refreshable Vertex provider
+    let provider = VertexProvider::from_service_account_file(
+        service_account_path,
         location.to_string(),
         gcs_bucket,
-    );
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to authenticate with Vertex AI: {}", e))?;
 
     // Create request
     let request = ImageGenerationRequest {
@@ -1080,8 +1070,7 @@ async fn generate_text_vertex(
 ) -> anyhow::Result<()> {
     use kalpa_core::provider::CompletionProvider;
     use kalpa_core::types::{CompletionRequest, Message, Role};
-    use std::path::Path;
-    
+
     // Get service account path
     let service_account_path = config
         .get_service_account_path(Provider::Vertex)
@@ -1103,23 +1092,17 @@ async fn generate_text_vertex(
         );
     }
 
-    // Get OAuth token
-    let auth_token = VertexAuthToken::from_service_account_file(Path::new(service_account_path))
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to authenticate with Vertex AI: {}", e))?;
-
-    let project_id = auth_token.project_id.clone();
-
     // Get GCS bucket from config
     let gcs_bucket = config.get_gcs_bucket(Provider::Vertex).map(|s| s.to_string());
 
-    // Create Vertex provider
-    let provider = VertexProvider::new(
-        auth_token.access_token,
-        project_id,
+    // Create refreshable Vertex provider
+    let provider = VertexProvider::from_service_account_file(
+        service_account_path,
         location.to_string(),
         gcs_bucket,
-    );
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to authenticate with Vertex AI: {}", e))?;
 
     // Create request
     let request = CompletionRequest {
@@ -1182,10 +1165,9 @@ async fn generate_video_vertex(
 ) -> anyhow::Result<()> {
     use kalpa_core::types::VideoGenerationRequest;
     use kalpa_core::jobs::{Job, JobStore, JobType, JobStatus};
-    use std::path::Path;
-    
+
     // Model validation is done by validate_provider_and_model() before reaching here
-    
+
     // Get service account path
     let service_account_path = config
         .get_service_account_path(Provider::Vertex)
@@ -1217,23 +1199,23 @@ async fn generate_video_vertex(
         }
     }
 
-    // Get OAuth token
-    let auth_token = VertexAuthToken::from_service_account_file(Path::new(service_account_path))
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to authenticate with Vertex AI: {}", e))?;
-
-    let project_id = auth_token.project_id.clone();
-
     // Get GCS bucket from config
     let gcs_bucket = config.get_gcs_bucket(Provider::Vertex).map(|s| s.to_string());
 
-    // Create Vertex provider
-    let provider = VertexProvider::new(
-        auth_token.access_token.clone(),
-        project_id.clone(),
+    // Create refreshable Vertex provider
+    let provider = VertexProvider::from_service_account_file(
+        service_account_path,
         location.to_string(),
         gcs_bucket,
-    );
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to authenticate with Vertex AI: {}", e))?;
+
+    let project_id = provider.project_id().to_string();
+    let access_token = provider
+        .access_token()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get Vertex access token: {}", e))?;
 
     // Create job
     let mut job = Job::new(
@@ -1303,7 +1285,7 @@ async fn generate_video_vertex(
                     let mut headers = reqwest::header::HeaderMap::new();
                     headers.insert(
                         reqwest::header::AUTHORIZATION,
-                        reqwest::header::HeaderValue::from_str(&format!("Bearer {}", auth_token.access_token))
+                        reqwest::header::HeaderValue::from_str(&format!("Bearer {}", access_token))
                             .unwrap(),
                     );
                     headers
