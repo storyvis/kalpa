@@ -34,6 +34,8 @@ pub struct AimdConfig {
     /// Debounce so a burst of decreases from one overload counts once.
     pub cooldown: Duration,
     /// Latency-gradient trip ratio (observed / baseline).
+    /// Positive infinity disables latency-driven decreases; explicit
+    /// backpressure and the concurrency bounds still apply.
     pub latency_threshold: f64,
 }
 
@@ -69,7 +71,7 @@ impl AimdLimiter {
         if !config.decrease_factor.is_finite() || !(0.0..1.0).contains(&config.decrease_factor) {
             config.decrease_factor = 0.5;
         }
-        if !config.latency_threshold.is_finite() || config.latency_threshold <= 1.0 {
+        if config.latency_threshold.is_nan() || config.latency_threshold <= 1.0 {
             config.latency_threshold = 2.0;
         }
         let initial = config.initial.clamp(config.min, config.max);
@@ -447,6 +449,51 @@ mod tests {
         l.on_completed(&p2, Duration::from_millis(500));
         assert!(l.limit() < 8);
     }
+    #[tokio::test]
+    async fn infinite_latency_threshold_disables_only_latency_backpressure() {
+        for reconfigure in [false, true] {
+            let config = AimdConfig {
+                latency_threshold: f64::INFINITY,
+                ..cfg()
+            };
+            let limiter = if reconfigure {
+                let limiter = AimdLimiter::new(cfg());
+                limiter.reconfigure(config);
+                limiter
+            } else {
+                AimdLimiter::new(config)
+            };
+            for latency in [Duration::from_millis(1), Duration::from_secs(60)] {
+                let permit = limiter.acquire().await;
+                limiter.on_completed(&permit, latency);
+                drop(permit);
+            }
+            assert_eq!(
+                limiter.limit(),
+                8,
+                "successful latency must not reduce capacity"
+            );
+            limiter.on_failed(true);
+            assert_eq!(
+                limiter.limit(),
+                4,
+                "explicit backpressure must still reduce capacity"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_latency_thresholds_keep_the_default_gradient() {
+        for latency_threshold in [f64::NAN, f64::NEG_INFINITY, -1.0, 0.0, 1.0] {
+            let limiter = AimdLimiter::new(AimdConfig {
+                latency_threshold,
+                ..cfg()
+            });
+            assert!(!limiter.observe_latency(Duration::from_millis(100)));
+            assert!(limiter.observe_latency(Duration::from_millis(500)));
+        }
+    }
+
     #[test]
     fn invalid_config_preserves_positive_bounded_capacity() {
         let limiter = AimdLimiter::new(AimdConfig {

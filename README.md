@@ -392,7 +392,7 @@ Default AIMD parameters:
 | `max` | 64 | Ceiling (backstop) |
 | `decrease_factor` | 0.5 | Multiplicative decrease ratio |
 | `cooldown` | 500ms | Debounce window for decrease signals |
-| `latency_threshold` | 2.0x | Latency gradient trip ratio |
+| `latency_threshold` | 2.0x | Latency gradient trip ratio; `f64::INFINITY` disables latency-driven decreases while preserving concurrency bounds and explicit backpressure |
 
 Retry with exponential backoff is also available for transient failures (network errors, 5xx, 429), with configurable max attempts, initial backoff, and multiplier.
 
