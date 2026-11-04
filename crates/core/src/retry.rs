@@ -41,7 +41,7 @@ impl Default for RetryConfig {
 /// call that starts billable work.
 pub fn is_retryable(err: &KalpaError) -> bool {
     match err {
-        KalpaError::Http(_) => true, // Network errors are always retryable
+        KalpaError::Http(error) => error.is_connect() || error.is_timeout(),
         KalpaError::RateLimited(_) => true,
         KalpaError::ProviderError { status, .. } => {
             // Retry on 429 (rate limit), 500, 502, 503, 504
@@ -107,7 +107,12 @@ where
     Fut: Future<Output = KalpaResult<T>>,
     P: Fn(&KalpaError) -> bool,
 {
-    let mut backoff = config.initial_backoff;
+    if config.max_attempts == 0 || !config.multiplier.is_finite() || config.multiplier < 1.0 {
+        return Err(KalpaError::Config(
+            "Retry attempts must be positive and multiplier finite and at least one".into(),
+        ));
+    }
+    let mut backoff = config.initial_backoff.min(config.max_backoff);
 
     for attempt in 1..=config.max_attempts {
         match operation().await {
@@ -121,18 +126,45 @@ where
                     attempt = attempt,
                     max_attempts = config.max_attempts,
                     backoff_ms = backoff.as_millis() as u64,
-                    error = %err,
                     "Retryable error, backing off"
                 );
 
                 sleep(backoff).await;
-                backoff = Duration::from_secs_f64(
-                    (backoff.as_secs_f64() * config.multiplier)
-                        .min(config.max_backoff.as_secs_f64()),
-                );
+                backoff = Duration::try_from_secs_f64(backoff.as_secs_f64() * config.multiplier)
+                    .unwrap_or(config.max_backoff)
+                    .min(config.max_backoff);
             }
         }
     }
 
     unreachable!("loop should have returned")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn zero_attempts_returns_configuration_error() {
+        let result = retry_with_backoff(
+            RetryConfig {
+                max_attempts: 0,
+                ..Default::default()
+            },
+            || async { Ok(()) },
+        )
+        .await;
+        assert!(matches!(result, Err(KalpaError::Config(_))));
+    }
+    #[tokio::test]
+    async fn invalid_multiplier_returns_configuration_error() {
+        let result = retry_with_backoff(
+            RetryConfig {
+                multiplier: f64::NAN,
+                ..Default::default()
+            },
+            || async { Ok(()) },
+        )
+        .await;
+        assert!(matches!(result, Err(KalpaError::Config(_))));
+    }
 }

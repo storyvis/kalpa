@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Google service account credentials from JSON file
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct ServiceAccount {
     #[serde(rename = "type")]
     pub account_type: String,
@@ -22,7 +22,7 @@ pub struct ServiceAccount {
 }
 
 /// OAuth access token with expiration
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct VertexAuthToken {
     pub access_token: String,
     pub expires_at: SystemTime,
@@ -32,13 +32,15 @@ pub struct VertexAuthToken {
 impl VertexAuthToken {
     /// Load service account from JSON file and get an access token
     pub async fn from_service_account_file<P: AsRef<Path>>(path: P) -> KalpaResult<Self> {
-        let json_content = std::fs::read_to_string(path.as_ref()).map_err(|e| {
-            KalpaError::Config(format!(
-                "Failed to read service account file {}: {}",
-                path.as_ref().display(),
-                e
-            ))
-        })?;
+        let json_content = tokio::fs::read_to_string(path.as_ref())
+            .await
+            .map_err(|e| {
+                KalpaError::Config(format!(
+                    "Failed to read service account file {}: {}",
+                    path.as_ref().display(),
+                    e
+                ))
+            })?;
 
         let service_account: ServiceAccount = serde_json::from_str(&json_content)
             .map_err(|e| KalpaError::Config(format!("Invalid service account JSON: {}", e)))?;
@@ -48,13 +50,16 @@ impl VertexAuthToken {
 
     /// Generate OAuth token from service account credentials
     pub async fn from_service_account(sa: ServiceAccount) -> KalpaResult<Self> {
+        validate_token_uri(&sa.token_uri)?;
         // Create JWT
         let jwt = create_jwt(&sa)?;
 
         // Exchange JWT for access token
         let token_response = exchange_jwt_for_token(&sa.token_uri, &jwt).await?;
 
-        let expires_at = SystemTime::now() + Duration::from_secs(token_response.expires_in);
+        let expires_at = SystemTime::now()
+            .checked_add(Duration::from_secs(token_response.expires_in))
+            .ok_or_else(|| KalpaError::Auth("Invalid OAuth token lifetime".into()))?;
 
         Ok(Self {
             access_token: token_response.access_token,
@@ -83,35 +88,21 @@ impl VertexAuthToken {
     }
 
     /// Refresh the token if needed, reloading the service account from disk.
-    pub async fn refresh_if_needed(
-        &mut self,
-        service_account_path: &Path,
-    ) -> KalpaResult<()> {
-        if !self.is_expired() {
-            return Ok(());
+    pub async fn refresh_if_needed(&mut self, service_account_path: &Path) -> KalpaResult<()> {
+        if self.is_expired() {
+            *self = Self::from_service_account_file(service_account_path).await?;
         }
-
-        let json_content = std::fs::read_to_string(service_account_path).map_err(|e| {
-            KalpaError::Config(format!(
-                "Failed to read service account file {}: {}",
-                service_account_path.display(),
-                e
-            ))
-        })?;
-        let sa: ServiceAccount = serde_json::from_str(&json_content)
-            .map_err(|e| KalpaError::Config(format!("Invalid service account JSON: {}", e)))?;
-
-        self.refresh_if_needed_sa(&sa).await
+        Ok(())
     }
 }
 
 /// Create a JWT for Google OAuth
 fn create_jwt(sa: &ServiceAccount) -> KalpaResult<String> {
     use base64::Engine;
-    
+
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .map_err(|_| KalpaError::Auth("System clock is before Unix epoch".into()))?
         .as_secs();
 
     // JWT Header
@@ -145,32 +136,34 @@ fn create_jwt(sa: &ServiceAccount) -> KalpaResult<String> {
 
 /// Sign message with RS256 using private key
 fn sign_rs256(message: &str, private_key_pem: &str) -> KalpaResult<Vec<u8>> {
-    use rsa::pkcs1::DecodeRsaPrivateKey;
-    use rsa::pkcs8::DecodePrivateKey;
-    use rsa::RsaPrivateKey;
-    use rsa::Pkcs1v15Sign;
-    use sha2::{Sha256, Digest};
-
-    // Try PKCS#8 first, then PKCS#1
-    let private_key = RsaPrivateKey::from_pkcs8_pem(private_key_pem)
-        .or_else(|_| RsaPrivateKey::from_pkcs1_pem(private_key_pem))
-        .map_err(|e| KalpaError::Config(format!("Invalid private key: {}", e)))?;
-
-    // Hash the message
-    let mut hasher = Sha256::new();
-    hasher.update(message.as_bytes());
-    let hashed = hasher.finalize();
-
-    // Sign with PKCS1v15 (required for RS256 JWT)
-    let signature = private_key
-        .sign(Pkcs1v15Sign::new::<Sha256>(), &hashed)
-        .map_err(|e| KalpaError::Config(format!("Failed to sign JWT: {}", e)))?;
-
+    use rustls_pki_types::{pem::PemObject, PrivateKeyDer};
+    let key = PrivateKeyDer::from_pem_slice(private_key_pem.as_bytes())
+        .map_err(|_| KalpaError::Config("Invalid private key PEM".into()))?;
+    let pair = match key {
+        PrivateKeyDer::Pkcs8(key) => {
+            ring::signature::RsaKeyPair::from_pkcs8(key.secret_pkcs8_der())
+        }
+        PrivateKeyDer::Pkcs1(key) => ring::signature::RsaKeyPair::from_der(key.secret_pkcs1_der()),
+        _ => {
+            return Err(KalpaError::Config(
+                "OAuth requires an RSA private key".into(),
+            ))
+        }
+    }
+    .map_err(|_| KalpaError::Config("Invalid RSA private key".into()))?;
+    let mut signature = vec![0; pair.public().modulus_len()];
+    pair.sign(
+        &ring::signature::RSA_PKCS1_SHA256,
+        &ring::rand::SystemRandom::new(),
+        message.as_bytes(),
+        &mut signature,
+    )
+    .map_err(|_| KalpaError::Auth("Failed to sign OAuth assertion".into()))?;
     Ok(signature)
 }
 
 /// Token response from Google OAuth
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
     expires_in: u64,
@@ -180,7 +173,10 @@ struct TokenResponse {
 
 /// Exchange JWT for OAuth access token
 async fn exchange_jwt_for_token(token_uri: &str, jwt: &str) -> KalpaResult<TokenResponse> {
-    let client = reqwest::Client::new();
+    validate_token_uri(token_uri)?;
+    let client = crate::http::client_builder()
+        .timeout(Duration::from_secs(30))
+        .build()?;
 
     let params = [
         ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
@@ -192,21 +188,94 @@ async fn exchange_jwt_for_token(token_uri: &str, jwt: &str) -> KalpaResult<Token
         .form(&params)
         .send()
         .await
-        .map_err(|e| KalpaError::Http(e))?;
+        .map_err(KalpaError::from)?;
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
         return Err(KalpaError::Auth(format!(
-            "OAuth token exchange failed ({}): {}",
-            status, body
+            "OAuth token exchange failed ({status})"
         )));
     }
 
-    let token_response: TokenResponse = response
-        .json()
-        .await
-        .map_err(|e| KalpaError::Auth(format!("Failed to parse token response: {}", e)))?;
+    let bytes = crate::http::read_bounded(response, 64 * 1024).await?;
+    let token_response: TokenResponse = serde_json::from_slice(&bytes)
+        .map_err(|_| KalpaError::Auth("Invalid OAuth token response".into()))?;
 
     Ok(token_response)
+}
+
+fn validate_token_uri(uri: &str) -> KalpaResult<()> {
+    if !matches!(
+        uri,
+        "https://oauth2.googleapis.com/token" | "https://accounts.google.com/o/oauth2/token"
+    ) {
+        return Err(KalpaError::Config(
+            "Service account token_uri must be a Google OAuth token endpoint".into(),
+        ));
+    }
+    Ok(())
+}
+
+impl std::fmt::Debug for ServiceAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServiceAccount")
+            .field("project_id", &self.project_id)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for VertexAuthToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VertexAuthToken")
+            .field("project_id", &self.project_id)
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rejects_untrusted_token_endpoints() {
+        for uri in [
+            "http://oauth2.googleapis.com/token",
+            "https://evil.example/token",
+            "https://oauth2.googleapis.com/token?redirect=evil",
+        ] {
+            assert!(validate_token_uri(uri).is_err());
+        }
+        assert!(validate_token_uri("https://oauth2.googleapis.com/token").is_ok());
+    }
+    #[test]
+    fn signs_pkcs8_and_pkcs1_with_verifiable_rs256() {
+        use ring::signature::KeyPair;
+        use rustls_pki_types::{pem::PemObject, PrivateKeyDer};
+        let pkcs8 = include_str!("../../tests/fixtures/test-rsa-pkcs8.pem");
+        let pkcs1 = include_str!("../../tests/fixtures/test-rsa-pkcs1.pem");
+        let key = PrivateKeyDer::from_pem_slice(pkcs8.as_bytes()).unwrap();
+        let pair = ring::signature::RsaKeyPair::from_pkcs8(key.secret_der()).unwrap();
+        for pem in [pkcs8, pkcs1] {
+            let signature = sign_rs256("test assertion", pem).unwrap();
+            ring::signature::UnparsedPublicKey::new(
+                &ring::signature::RSA_PKCS1_2048_8192_SHA256,
+                pair.public_key().as_ref(),
+            )
+            .verify(b"test assertion", &signature)
+            .unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn fresh_token_does_not_reload_credentials_from_disk() {
+        let mut token = VertexAuthToken {
+            access_token: "cached-secret-token".into(),
+            expires_at: SystemTime::now() + Duration::from_secs(3600),
+            project_id: "test-project".into(),
+        };
+        token
+            .refresh_if_needed(Path::new("/nonexistent/kalpa-service-account.json"))
+            .await
+            .unwrap();
+        assert_eq!(token.access_token, "cached-secret-token");
+        assert!(!format!("{token:?}").contains("cached-secret-token"));
+    }
 }

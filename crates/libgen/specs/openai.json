@@ -1,45 +1,318 @@
 {
-  "openapi": "3.0.3",
-  "info": {
-    "title": "OpenAI Media Generation API",
-    "version": "1.0.0",
-    "description": "OpenAI API spec for text generation, image generation, and video generation"
+  "components": {
+    "schemas": {
+      "AssistantMessage": {
+        "properties": {
+          "content": {
+            "description": "The contents of the message.",
+            "nullable": true,
+            "type": "string"
+          },
+          "role": {
+            "description": "The role of the author of this message.",
+            "type": "string"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "ChatCompletionResponseMessage"
+      },
+      "ChatCompletionRequest": {
+        "properties": {
+          "max_completion_tokens": {
+            "description": "An upper bound for the number of tokens that can be generated for a completion, including visible output tokens and [reasoning tokens](https://developers.openai.com/api/docs/guides/reasoning).\n",
+            "nullable": true,
+            "type": "integer"
+          },
+          "max_tokens": {
+            "deprecated": true,
+            "description": "The maximum number of [tokens](https://platform.openai.com/tokenizer) that can be generated in the\nchat completion. This value can be used to control\n[costs](https://openai.com/api/pricing/) for text generated via API.\n\nThis value is now deprecated in favor of `max_completion_tokens`, and is\nnot compatible with [o-series models](https://developers.openai.com/api/docs/guides/reasoning).\n",
+            "nullable": true,
+            "type": "integer"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/Message"
+            },
+            "type": "array"
+          },
+          "model": {
+            "type": "string"
+          },
+          "temperature": {
+            "description": "What sampling temperature to use, between 0 and 2. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic.\nWe generally recommend altering this or `top_p` but not both.\n",
+            "maximum": 2,
+            "minimum": 0,
+            "nullable": true,
+            "type": "number"
+          }
+        },
+        "required": [
+          "model",
+          "messages"
+        ],
+        "type": "object",
+        "x-kalpa-source-schema": "CreateChatCompletionRequest"
+      },
+      "ChatCompletionResponse": {
+        "properties": {
+          "choices": {
+            "items": {
+              "$ref": "#/components/schemas/Choice"
+            },
+            "type": "array"
+          },
+          "id": {
+            "description": "A unique identifier for the chat completion.",
+            "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/CompletionUsage"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "CreateChatCompletionResponse"
+      },
+      "Choice": {
+        "properties": {
+          "index": {
+            "description": "The index of the choice in the list of choices.",
+            "type": "integer"
+          },
+          "message": {
+            "$ref": "#/components/schemas/AssistantMessage"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "inline schema"
+      },
+      "CompletionUsage": {
+        "properties": {
+          "completion_tokens": {
+            "description": "Number of tokens in the generated completion.",
+            "type": "integer"
+          },
+          "prompt_tokens": {
+            "description": "Number of tokens in the prompt.",
+            "type": "integer"
+          },
+          "total_tokens": {
+            "description": "Total number of tokens used in the request (prompt + completion).",
+            "type": "integer"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "CompletionUsage"
+      },
+      "Image": {
+        "properties": {
+          "b64_json": {
+            "description": "The base64-encoded JSON of the generated image. Returned by default for GPT image models, or when `response_format` is set to `b64_json` for models that support that parameter.",
+            "type": "string"
+          },
+          "url": {
+            "description": "The URL of the generated image when `response_format` is set to `url` for models that support that parameter. Unsupported for GPT image models.",
+            "type": "string"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "Image"
+      },
+      "ImageGenerationRequest": {
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "n": {
+            "description": "The number of images to generate. Must be between 1 and 10.",
+            "maximum": 10,
+            "minimum": 1,
+            "nullable": true,
+            "type": "integer"
+          },
+          "prompt": {
+            "description": "A text description of the desired image(s). The maximum length is 32000 characters.",
+            "type": "string"
+          },
+          "size": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "prompt"
+        ],
+        "type": "object",
+        "x-kalpa-source-schema": "CreateImageRequest"
+      },
+      "ImageGenerationResponse": {
+        "properties": {
+          "created": {
+            "description": "The Unix timestamp (in seconds) of when the image was created.",
+            "type": "integer"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/Image"
+            },
+            "type": "array"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "ImagesResponse"
+      },
+      "Message": {
+        "properties": {
+          "content": {
+            "description": "The text contents of the message.",
+            "type": "string"
+          },
+          "role": {
+            "description": "The role of the messages author, in this case `user`.",
+            "enum": [
+              "system",
+              "user",
+              "assistant"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "ChatCompletionRequestUserMessage"
+      },
+      "Usage": {
+        "properties": {
+          "input_tokens": {
+            "description": "The number of tokens (images and text) in the input prompt.",
+            "type": "integer"
+          },
+          "input_tokens_details": {
+            "description": "The input tokens detailed information for the image generation.",
+            "properties": {
+              "image_tokens": {
+                "description": "The number of image tokens in the input prompt.",
+                "type": "integer"
+              },
+              "text_tokens": {
+                "description": "The number of text tokens in the input prompt.",
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "output_tokens": {
+            "description": "The number of output tokens generated by the model.",
+            "type": "integer"
+          },
+          "total_tokens": {
+            "description": "The total number of tokens (images and text) used for the image generation.",
+            "type": "integer"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "ImageGenUsage"
+      },
+      "VideoGenerationRequest": {
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "prompt": {
+            "description": "Text prompt that describes the video to generate.",
+            "maxLength": 32000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "seconds": {
+            "type": "string"
+          },
+          "size": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "prompt"
+        ],
+        "type": "object",
+        "x-kalpa-source-schema": "CreateVideoJsonBody"
+      },
+      "VideoGenerationResponse": {
+        "properties": {
+          "created_at": {
+            "description": "Unix timestamp (seconds) for when the job was created.",
+            "type": "integer"
+          },
+          "id": {
+            "description": "Unique identifier for the video job.",
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "object": {
+            "description": "The object type, which is always `video`.",
+            "type": "string"
+          },
+          "progress": {
+            "description": "Approximate completion percentage for the generation task.",
+            "type": "integer"
+          },
+          "seconds": {
+            "description": "Duration of the generated clip in seconds. For extensions, this is the stitched total duration.",
+            "type": "string"
+          },
+          "size": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "VideoResource"
+      }
+    },
+    "securitySchemes": {
+      "providerAuth": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
   },
-  "servers": [
-    {
-      "url": "https://api.openai.com"
-    }
-  ],
-  "security": [
-    {
-      "bearerAuth": []
-    }
-  ],
+  "info": {
+    "description": "Generated from official source by scripts/schema-refresh.py. This is a compatibility projection, not the full upstream API. See specs/README.md for retained fields and transformations.",
+    "title": "Kalpa openai supported-operation projection",
+    "version": "b4cad10d7cff7fc286f2dbf1992569989522c6f0"
+  },
+  "openapi": "3.0.3",
   "paths": {
     "/v1/chat/completions": {
       "post": {
         "operationId": "chatCompletions",
-        "summary": "Generate text responses",
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ChatCompletionRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
-            "description": "Successful response",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ChatCompletionResponse"
                 }
               }
-            }
+            },
+            "description": "Successful provider response"
           }
         }
       }
@@ -47,27 +320,26 @@
     "/v1/images/generations": {
       "post": {
         "operationId": "createImage",
-        "summary": "Generate images",
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ImageGenerationRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
-            "description": "Successful image generation",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ImageGenerationResponse"
                 }
               }
-            }
+            },
+            "description": "Successful provider response"
           }
         }
       }
@@ -75,265 +347,46 @@
     "/v1/videos": {
       "post": {
         "operationId": "createVideo",
-        "summary": "Generate videos",
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/VideoGenerationRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
-            "description": "Successful video generation",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/VideoGenerationResponse"
                 }
               }
-            }
+            },
+            "description": "Successful provider response"
           }
         }
       }
     }
   },
-  "components": {
-    "securitySchemes": {
-      "bearerAuth": {
-        "type": "http",
-        "scheme": "bearer",
-        "bearerFormat": "API_KEY"
-      }
-    },
-    "schemas": {
-      "ChatCompletionRequest": {
-        "type": "object",
-        "required": ["model", "messages"],
-        "properties": {
-          "model": {
-            "type": "string",
-            "example": "gpt-4.1-mini"
-          },
-          "messages": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Message"
-            }
-          },
-          "temperature": {
-            "type": "number",
-            "nullable": true,
-            "default": 1.0
-          },
-          "max_tokens": {
-            "type": "integer",
-            "nullable": true,
-            "default": 2048
-          }
-        }
-      },
-      "Message": {
-        "type": "object",
-        "properties": {
-          "role": {
-            "type": "string",
-            "enum": ["system", "user", "assistant"]
-          },
-          "content": {
-            "type": "string"
-          }
-        }
-      },
-      "ChatCompletionResponse": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "choices": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Choice"
-            }
-          },
-          "usage": {
-            "$ref": "#/components/schemas/Usage"
-          }
-        }
-      },
-      "Choice": {
-        "type": "object",
-        "properties": {
-          "index": {
-            "type": "integer"
-          },
-          "message": {
-            "$ref": "#/components/schemas/AssistantMessage"
-          }
-        }
-      },
-      "AssistantMessage": {
-        "type": "object",
-        "properties": {
-          "role": {
-            "type": "string"
-          },
-          "content": {
-            "type": "string"
-          }
-        }
-      },
-      "ImageGenerationRequest": {
-        "type": "object",
-        "required": ["model", "prompt"],
-        "properties": {
-          "model": {
-            "type": "string",
-            "example": "gpt-image-1.5"
-          },
-          "prompt": {
-            "type": "string"
-          },
-          "n": {
-            "type": "integer",
-            "nullable": true,
-            "default": 1
-          },
-          "size": {
-            "type": "string",
-            "nullable": true,
-            "example": "1024x1024"
-          }
-        }
-      },
-      "ImageGenerationResponse": {
-        "type": "object",
-        "properties": {
-          "created": {
-            "type": "integer"
-          },
-          "data": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "b64_json": {
-                  "type": "string",
-                  "nullable": true
-                },
-                "url": {
-                  "type": "string",
-                  "nullable": true
-                }
-              }
-            }
-          },
-          "usage": {
-            "$ref": "#/components/schemas/Usage"
-          }
-        }
-      },
-      "Usage": {
-        "type": "object",
-        "properties": {
-          "total_tokens": {
-            "type": "integer",
-            "nullable": true
-          },
-          "input_tokens": {
-            "type": "integer",
-            "nullable": true
-          },
-          "output_tokens": {
-            "type": "integer",
-            "nullable": true
-          },
-          "input_tokens_details": {
-            "type": "object",
-            "nullable": true,
-            "properties": {
-              "text_tokens": {
-                "type": "integer",
-                "nullable": true
-              },
-              "image_tokens": {
-                "type": "integer",
-                "nullable": true
-              }
-            }
-          }
-        }
-      },
-      "VideoGenerationRequest": {
-        "type": "object",
-        "required": ["model", "prompt"],
-        "properties": {
-          "model": {
-            "type": "string",
-            "example": "sora-2"
-          },
-          "prompt": {
-            "type": "string"
-          },
-          "size": {
-            "type": "string",
-            "nullable": true,
-            "example": "1024x1792"
-          },
-          "seconds": {
-            "type": "string",
-            "nullable": true,
-            "example": "8"
-          },
-          "quality": {
-            "type": "string",
-            "nullable": true,
-            "enum": ["standard", "high"]
-          }
-        }
-      },
-      "VideoGenerationResponse": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "object": {
-            "type": "string",
-            "example": "video"
-          },
-          "model": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string",
-            "example": "queued"
-          },
-          "progress": {
-            "type": "integer",
-            "nullable": true
-          },
-          "created_at": {
-            "type": "integer"
-          },
-          "size": {
-            "type": "string",
-            "nullable": true
-          },
-          "seconds": {
-            "type": "string",
-            "nullable": true
-          },
-          "quality": {
-            "type": "string",
-            "nullable": true
-          }
-        }
-      }
+  "security": [
+    {
+      "providerAuth": []
     }
+  ],
+  "servers": [
+    {
+      "url": "https://api.openai.com"
+    }
+  ],
+  "x-kalpa-upstream": {
+    "bytes": 5112409,
+    "fetched_at": "2026-11-04",
+    "revision": "b4cad10d7cff7fc286f2dbf1992569989522c6f0",
+    "sha256": "24fe4259875361cb38bc552fc2355758649edbe68191f31338153d129e718ad3",
+    "url": "https://raw.githubusercontent.com/openai/openai-openapi/b4cad10d7cff7fc286f2dbf1992569989522c6f0/openapi.json"
   }
 }

@@ -73,7 +73,10 @@ impl HttpModelCatalog {
             wire,
             base: base.trim_end_matches('/').to_string(),
             key: key.filter(|k| !k.trim().is_empty()),
-            http: reqwest::Client::builder().timeout(TIMEOUT).build().unwrap_or_default(),
+            http: crate::http::client_builder()
+                .timeout(TIMEOUT)
+                .build()
+                .expect("HTTP client initialization"),
             single_lookup,
         }
     }
@@ -111,21 +114,29 @@ impl HttpModelCatalog {
         match (self.wire, &self.key) {
             (_, None) => req,
             (Wire::OpenAi, Some(k)) => req.bearer_auth(k),
-            (Wire::Claude, Some(k)) => req.header("x-api-key", k).header("anthropic-version", "2023-06-01"),
+            (Wire::Claude, Some(k)) => req
+                .header("x-api-key", crate::http::secret_header(k))
+                .header("anthropic-version", "2023-06-01"),
             // A header, not `?key=`: a URL ends up in logs and error text.
-            (Wire::Gemini, Some(k)) => req.header("x-goog-api-key", k),
+            (Wire::Gemini, Some(k)) => req.header("x-goog-api-key", crate::http::secret_header(k)),
         }
     }
 
     async fn send(&self, req: reqwest::RequestBuilder) -> KalpaResult<reqwest::Response> {
-        let resp = req.send().await.map_err(|e| KalpaError::Http(e.without_url()))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| KalpaError::Http(e.without_url()))?;
         check_response(resp, &self.name).await
     }
 }
 
 /// A path segment with the characters that would end it escaped.
 fn segment(id: &str) -> String {
-    id.replace('%', "%25").replace('/', "%2F").replace('?', "%3F").replace('#', "%23")
+    id.replace('%', "%25")
+        .replace('/', "%2F")
+        .replace('?', "%3F")
+        .replace('#', "%23")
 }
 
 #[derive(Deserialize)]
@@ -174,8 +185,12 @@ impl ModelCatalog for HttpModelCatalog {
         let mut out = Vec::new();
         match self.wire {
             Wire::OpenAi => {
-                let list: OpenAiList = self.send(self.get("/models")).await?.json().await?;
-                out.extend(list.data.into_iter().map(|m| ModelListing { id: m.id, display_name: None }));
+                let list: OpenAiList =
+                    crate::http::read_json(self.send(self.get("/models")).await?).await?;
+                out.extend(list.data.into_iter().map(|m| ModelListing {
+                    id: m.id,
+                    display_name: None,
+                }));
             }
             Wire::Claude => {
                 let mut after: Option<String> = None;
@@ -184,8 +199,11 @@ impl ModelCatalog for HttpModelCatalog {
                     if let Some(a) = &after {
                         req = req.query(&[("after_id", a.as_str())]);
                     }
-                    let page: ClaudeList = self.send(req).await?.json().await?;
-                    out.extend(page.data.into_iter().map(|m| ModelListing { id: m.id, display_name: m.display_name }));
+                    let page: ClaudeList = crate::http::read_json(self.send(req).await?).await?;
+                    out.extend(page.data.into_iter().map(|m| ModelListing {
+                        id: m.id,
+                        display_name: m.display_name,
+                    }));
                     match (page.has_more, page.last_id) {
                         (true, Some(last)) => after = Some(last),
                         _ => break,
@@ -199,10 +217,16 @@ impl ModelCatalog for HttpModelCatalog {
                     if let Some(t) = &token {
                         req = req.query(&[("pageToken", t.as_str())]);
                     }
-                    let page: GeminiList = self.send(req).await?.json().await?;
-                    out.extend(page.models.into_iter().map(|m| ModelListing {
-                        id: m.name.strip_prefix("models/").unwrap_or(&m.name).to_string(),
-                        display_name: m.display_name,
+                    let page: GeminiList = crate::http::read_json(self.send(req).await?).await?;
+                    out.extend(page.models.into_iter().map(|m| {
+                        ModelListing {
+                            id: m
+                                .name
+                                .strip_prefix("models/")
+                                .unwrap_or(&m.name)
+                                .to_string(),
+                            display_name: m.display_name,
+                        }
                     }));
                     match page.next_page_token.filter(|t| !t.is_empty()) {
                         Some(t) => token = Some(t),
@@ -218,7 +242,11 @@ impl ModelCatalog for HttpModelCatalog {
         if !self.single_lookup {
             return Ok(self.list_models().await?.iter().any(|m| m.id == id));
         }
-        let id = if self.wire == Wire::Gemini { id.strip_prefix("models/").unwrap_or(id) } else { id };
+        let id = if self.wire == Wire::Gemini {
+            id.strip_prefix("models/").unwrap_or(id)
+        } else {
+            id
+        };
         let resp = self
             .get(&format!("/models/{}", segment(id)))
             .send()

@@ -7,7 +7,9 @@
 use async_trait::async_trait;
 
 use crate::error::KalpaResult;
-use crate::generation::{GenerationRequest, GenerationResponse, SpeechRequest, TranscriptionRequest};
+use crate::generation::{
+    GenerationRequest, GenerationResponse, SpeechRequest, TranscriptionRequest,
+};
 use crate::types::{
     CompletionRequest, CompletionResponse, EmbeddingRequest, EmbeddingResponse,
     ImageGenerationRequest, ImageGenerationResponse, VideoGenerationRequest,
@@ -61,6 +63,12 @@ pub trait GenerationProvider: Send + Sync {
 
     /// Poll an async generation for its current status.
     async fn poll(&self, handle: &JobHandle) -> KalpaResult<PollStatus>;
+
+    /// Best-effort cancellation for queued work when its caller stops waiting.
+    /// Providers without cancellation may retain the default implementation.
+    async fn cancel(&self, _handle: &JobHandle) -> KalpaResult<()> {
+        Ok(())
+    }
 }
 
 /// Provider that supports text-to-speech.
@@ -136,4 +144,31 @@ pub trait VideoGenerationProvider: Send + Sync {
         &self,
         request: &VideoGenerationRequest,
     ) -> KalpaResult<VideoGenerationResponse>;
+}
+
+pub(crate) struct CancelOnDrop {
+    pub(crate) provider: std::sync::Arc<dyn GenerationProvider>,
+    pub(crate) handle: Option<JobHandle>,
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            let provider = std::sync::Arc::clone(&self.provider);
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    if !matches!(
+                        tokio::time::timeout(
+                            std::time::Duration::from_secs(10),
+                            provider.cancel(&handle)
+                        )
+                        .await,
+                        Ok(Ok(()))
+                    ) {
+                        tracing::warn!("Provider job cancellation did not complete successfully");
+                    }
+                });
+            }
+        }
+    }
 }

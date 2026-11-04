@@ -1,182 +1,247 @@
 {
-  "openapi": "3.0.3",
-  "info": {
-    "title": "Gemini API",
-    "version": "1.0.0",
-    "description": "Gemini generateContent API"
+  "components": {
+    "schemas": {
+      "Blob": {
+        "properties": {
+          "data": {
+            "description": "Raw bytes for media formats.",
+            "type": "string"
+          },
+          "mimeType": {
+            "description": "The IANA standard MIME type of the source data. Examples of supported types: - Images: image/png, image/jpeg, image/jpg, image/webp, image/heic, image/heif, image/gif, image/avif - Audio: audio/*, video/audio/s16le, video/audio/wav - Video: video/* - Text: text/plain, text/html, text/css, text/javascript, text/x-typescript, text/csv, text/markdown, text/x-python, text/xml, text/rtf, video/text/timestamp - Applications: application/x-javascript, application/x-typescript, application/x-python-code, application/json, application/x-ipynb+json, application/rtf, application/pdf For additional context, see [Supported file formats](https://aistudio.google.com/docs/file-input-methods#supported-content-types).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mimeType",
+          "data"
+        ],
+        "type": "object",
+        "x-kalpa-source-schema": "Blob"
+      },
+      "Candidate": {
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/Content"
+          },
+          "finishReason": {
+            "description": "Optional. Output only. The reason why the model stopped generating tokens. If empty, the model has not stopped generating tokens.",
+            "type": "string"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "Candidate"
+      },
+      "Content": {
+        "properties": {
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/Part"
+            },
+            "type": "array"
+          },
+          "role": {
+            "description": "Optional. The producer of the content. Must be either 'user' or 'model'. Useful to set for multi-turn conversations, otherwise can be left blank or unset.",
+            "type": "string"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "Content"
+      },
+      "FileData": {
+        "properties": {
+          "fileUri": {
+            "description": "Required. URI.",
+            "type": "string"
+          },
+          "mimeType": {
+            "description": "Optional. The IANA standard MIME type of the source data.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mimeType",
+          "fileUri"
+        ],
+        "type": "object",
+        "x-kalpa-source-schema": "FileData"
+      },
+      "GenerateContentRequest": {
+        "properties": {
+          "contents": {
+            "items": {
+              "$ref": "#/components/schemas/Content"
+            },
+            "type": "array"
+          },
+          "generationConfig": {
+            "$ref": "#/components/schemas/GenerationConfig"
+          }
+        },
+        "required": [
+          "contents"
+        ],
+        "type": "object",
+        "x-kalpa-source-schema": "GenerateContentRequest"
+      },
+      "GenerateContentResponse": {
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/Candidate"
+            },
+            "type": "array"
+          },
+          "usageMetadata": {
+            "$ref": "#/components/schemas/UsageMetadata"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "GenerateContentResponse"
+      },
+      "GenerationConfig": {
+        "properties": {
+          "maxOutputTokens": {
+            "description": "Optional. The maximum number of tokens to include in a response candidate. Note: The default value varies by model, see the `Model.output_token_limit` attribute of the `Model` returned from the `getModel` function.",
+            "type": "integer"
+          },
+          "responseMimeType": {
+            "description": "Optional. MIME type of the generated candidate text. Supported MIME types are: `text/plain`: (default) Text output. `application/json`: JSON response in the response candidates. `text/x.enum`: ENUM as a string response in the response candidates. Refer to the [docs](https://aistudio.google.com/docs/file-input-methods#text-file-types) for a list of all supported text MIME types.",
+            "type": "string"
+          },
+          "responseModalities": {
+            "description": "Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supported modalities. If the requested modalities do not match any of the supported combinations, an error will be returned. An empty list is equivalent to requesting only text.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "stopSequences": {
+            "description": "Optional. The set of character sequences (up to 5) that will stop output generation. If specified, the API will stop at the first appearance of a `stop_sequence`. The stop sequence will not be included as part of the response.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "temperature": {
+            "description": "Optional. Controls the randomness of the output. Note: The default value varies by model, see the `Model.temperature` attribute of the `Model` returned from the `getModel` function. Values can range from [0.0, 2.0]. This field is no longer supported and is silently ignored on Gemini 3.6 Flash and newer models.",
+            "type": "number"
+          },
+          "topK": {
+            "description": "Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling don't allow top_k setting. Note: The default value varies by `Model` and is specified by the`Model.top_p` attribute returned from the `getModel` function. An empty `top_k` attribute indicates that the model doesn't apply top-k sampling and doesn't allow setting `top_k` on requests. This field is no longer supported and is silently ignored on Gemini 3.6 Flash and newer models.",
+            "type": "integer"
+          },
+          "topP": {
+            "description": "Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k sampling directly limits the maximum number of tokens to consider, while Nucleus sampling limits the number of tokens based on the cumulative probability. Note: The default value varies by `Model` and is specified by the`Model.top_p` attribute returned from the `getModel` function. An empty `top_k` attribute indicates that the model doesn't apply top-k sampling and doesn't allow setting `top_k` on requests. This field is no longer supported and is silently ignored on Gemini 3.6 Flash and newer models.",
+            "type": "number"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "GenerationConfig"
+      },
+      "Part": {
+        "properties": {
+          "fileData": {
+            "$ref": "#/components/schemas/FileData"
+          },
+          "inlineData": {
+            "$ref": "#/components/schemas/Blob"
+          },
+          "text": {
+            "description": "Inline text.",
+            "type": "string"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "Part"
+      },
+      "UsageMetadata": {
+        "properties": {
+          "candidatesTokenCount": {
+            "description": "Total number of tokens across all the generated response candidates.",
+            "type": "integer"
+          },
+          "promptTokenCount": {
+            "description": "Number of tokens in the prompt. When `cached_content` is set, this is still the total effective prompt size meaning this includes the number of tokens in the cached content.",
+            "type": "integer"
+          },
+          "totalTokenCount": {
+            "description": "Total token count for the generation request (prompt + tool-use prompt + thoughts + response candidates).",
+            "type": "integer"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "UsageMetadata"
+      }
+    },
+    "securitySchemes": {
+      "providerAuth": {
+        "in": "header",
+        "name": "x-goog-api-key",
+        "type": "apiKey"
+      }
+    }
   },
-  "servers": [
-    {
-      "url": "https://generativelanguage.googleapis.com"
-    }
-  ],
-  "security": [
-    {
-      "ApiKeyAuth": []
-    }
-  ],
+  "info": {
+    "description": "Generated from official source by scripts/schema-refresh.py. This is a compatibility projection, not the full upstream API. See specs/README.md for retained fields and transformations.",
+    "title": "Kalpa gemini supported-operation projection",
+    "version": "20261103"
+  },
+  "openapi": "3.0.3",
   "paths": {
     "/v1beta/models/{model}:generateContent": {
       "post": {
         "operationId": "generateContent",
-        "summary": "Generate content from Gemini model",
         "parameters": [
           {
-            "name": "model",
             "in": "path",
+            "name": "model",
             "required": true,
             "schema": {
               "type": "string"
-            },
-            "example": "gemini-2.5-flash"
+            }
           }
         ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/GenerateContentRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
-            "description": "Successful response",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GenerateContentResponse"
                 }
               }
-            }
-          }
-        }
-      }
-    },
-    "/v1beta/models/{model}:streamGenerateContent": {
-      "post": {
-        "operationId": "streamGenerateContent",
-        "summary": "Stream generated content",
-        "parameters": [
-          {
-            "name": "model",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/GenerateContentRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Streaming response",
-            "content": {
-              "text/event-stream": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
+            },
+            "description": "Successful provider response"
           }
         }
       }
     }
   },
-  "components": {
-    "securitySchemes": {
-      "ApiKeyAuth": {
-        "type": "apiKey",
-        "in": "header",
-        "name": "x-goog-api-key"
-      }
-    },
-    "schemas": {
-      "GenerateContentRequest": {
-        "type": "object",
-        "required": ["contents"],
-        "properties": {
-          "contents": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Content"
-            }
-          }
-        }
-      },
-      "Content": {
-        "type": "object",
-        "properties": {
-          "role": {
-            "type": "string",
-            "enum": ["user", "model"]
-          },
-          "parts": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Part"
-            }
-          }
-        }
-      },
-      "Part": {
-        "type": "object",
-        "properties": {
-          "text": {
-            "type": "string"
-          },
-          "inline_data": {
-            "$ref": "#/components/schemas/Blob"
-          }
-        }
-      },
-      "Blob": {
-        "type": "object",
-        "required": ["mime_type", "data"],
-        "properties": {
-          "mime_type": {
-            "type": "string",
-            "example": "image/png"
-          },
-          "data": {
-            "type": "string",
-            "format": "byte"
-          }
-        }
-      },
-      "GenerateContentResponse": {
-        "type": "object",
-        "properties": {
-          "candidates": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Candidate"
-            }
-          }
-        }
-      },
-      "Candidate": {
-        "type": "object",
-        "properties": {
-          "content": {
-            "$ref": "#/components/schemas/Content"
-          },
-          "finishReason": {
-            "type": "string"
-          }
-        }
-      }
+  "security": [
+    {
+      "providerAuth": []
     }
+  ],
+  "servers": [
+    {
+      "url": "https://generativelanguage.googleapis.com"
+    }
+  ],
+  "x-kalpa-upstream": {
+    "bytes": 387956,
+    "fetched_at": "2026-11-04",
+    "revision": "20261103",
+    "sha256": "545bf565ec01c9ad55db22ba2179228e047e00b9186828da844d0736adc0364d",
+    "url": "https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta"
   }
 }

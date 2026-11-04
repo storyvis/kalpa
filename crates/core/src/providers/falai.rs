@@ -88,6 +88,7 @@ where
 }
 
 /// Fal AI provider for various generative models.
+#[derive(Clone)]
 pub struct FalAIProvider {
     client: falai::Client,
     http_client: reqwest::Client,
@@ -152,12 +153,12 @@ impl FalAIProvider {
     /// * `api_key` - Fal AI API key
     pub fn new(api_key: String) -> Self {
         // Create reqwest client with authentication headers
-        let reqwest_client = reqwest::Client::builder()
+        let reqwest_client = crate::http::client_builder()
             .default_headers({
                 let mut headers = reqwest::header::HeaderMap::new();
                 headers.insert(
                     reqwest::header::AUTHORIZATION,
-                    reqwest::header::HeaderValue::from_str(&format!("Key {}", api_key)).unwrap(),
+                    crate::http::secret_header(&format!("Key {}", api_key)),
                 );
                 headers
             })
@@ -166,12 +167,13 @@ impl FalAIProvider {
             .unwrap();
 
         // Create progenitor-generated client using the queue.fal.run base URL
-        let client = falai::Client::new_with_client(
-            "https://queue.fal.run",
-            reqwest_client.clone(),
-        );
+        let client =
+            falai::Client::new_with_client("https://queue.fal.run", reqwest_client.clone());
 
-        Self { client, http_client: reqwest_client }
+        Self {
+            client,
+            http_client: reqwest_client,
+        }
     }
 
     /// Upload a file to Fal.ai storage and return the URL (or data URL)
@@ -183,20 +185,18 @@ impl FalAIProvider {
     /// * `KalpaResult<String>` - URL of the uploaded file (data URL as fallback)
     pub async fn upload_file(&self, file_path: &str) -> KalpaResult<String> {
         use std::path::Path;
-        
+
         // Read the file
-        let file_data = tokio::fs::read(file_path)
-            .await
-            .map_err(|e| KalpaError::ProviderError {
-                status: 400u16,
-                message: format!("Failed to read file: {}", e),
-            })?;
+        let file_data =
+            tokio::fs::read(file_path)
+                .await
+                .map_err(|e| KalpaError::ProviderError {
+                    status: 400u16,
+                    message: format!("Failed to read file: {}", e),
+                })?;
 
         // Detect content type from extension
-        let content_type = match Path::new(file_path)
-            .extension()
-            .and_then(|e| e.to_str())
-        {
+        let content_type = match Path::new(file_path).extension().and_then(|e| e.to_str()) {
             Some("jpg") | Some("jpeg") => "image/jpeg",
             Some("png") => "image/png",
             Some("gif") => "image/gif",
@@ -214,18 +214,24 @@ impl FalAIProvider {
     }
 
     /// Submit a request to fal.ai queue using progenitor-generated client
-    pub async fn queue_submit<T>(&self, model_id: &str, request: &T) -> KalpaResult<FalQueueSubmitResponse>
+    pub async fn queue_submit<T>(
+        &self,
+        model_id: &str,
+        request: &T,
+    ) -> KalpaResult<FalQueueSubmitResponse>
     where
         T: Serialize,
     {
+        validate_model_path(model_id)?;
         // Serialize request to serde_json::Value and convert to Map
-        let request_value = serde_json::to_value(request)
-            .map_err(|e| KalpaError::ProviderError {
+        let request_value =
+            serde_json::to_value(request).map_err(|e| KalpaError::ProviderError {
                 status: 400u16,
                 message: format!("Failed to serialize request: {}", e),
             })?;
-        
-        let request_body = request_value.as_object()
+
+        let request_body = request_value
+            .as_object()
             .ok_or_else(|| KalpaError::ProviderError {
                 status: 400u16,
                 message: "Request must be a JSON object".to_string(),
@@ -236,45 +242,54 @@ impl FalAIProvider {
             .client
             .submit_to_queue(model_id, request_body)
             .await
-            .map_err(|e| KalpaError::ProviderError {
-                status: 500u16,
-                message: format!("Fal AI queue submit failed: {}", e),
-            })?
+            .map_err(crate::http::generated_error)?
             .into_inner();
 
         // Convert from generated type to our custom type
         Ok(FalQueueSubmitResponse {
             request_id: response.request_id,
-            status_url: response.status_url,
-            response_url: response.response_url,
+            status_url: response
+                .status_url
+                .ok_or_else(|| KalpaError::ProviderError {
+                    status: 502,
+                    message: "Fal submit response missing status URL".into(),
+                })?,
+            response_url: response
+                .response_url
+                .ok_or_else(|| KalpaError::ProviderError {
+                    status: 502,
+                    message: "Fal submit response missing result URL".into(),
+                })?,
             cancel_url: response.cancel_url,
         })
     }
 
     /// Check status of a queued request using progenitor-generated client
-    pub async fn queue_status(&self, model_id: &str, request_id: &str) -> KalpaResult<FalQueueStatus> {
+    pub async fn queue_status(
+        &self,
+        model_id: &str,
+        request_id: &str,
+    ) -> KalpaResult<FalQueueStatus> {
+        validate_model_path(model_id)?;
         // Use progenitor-generated method
         let response = self
             .client
             .get_queue_status(model_id, request_id, Some("1"))
             .await
-            .map_err(|e| KalpaError::ProviderError {
-                status: 500u16,
-                message: format!("Fal AI queue status check failed: {}", e),
-            })?
+            .map_err(crate::http::generated_error)?
             .into_inner();
 
         // Convert from generated response to our custom enum via JSON serialization
-        let status_json = serde_json::to_value(&response)
-            .map_err(|e| KalpaError::ProviderError {
+        let status_json =
+            serde_json::to_value(&response).map_err(|e| KalpaError::ProviderError {
                 status: 500u16,
                 message: format!("Failed to serialize status response: {}", e),
             })?;
-        
-        let status: FalQueueStatus = serde_json::from_value(status_json)
-            .map_err(|e| KalpaError::ProviderError {
+
+        let status: FalQueueStatus =
+            serde_json::from_value(status_json).map_err(|_| KalpaError::ProviderError {
                 status: 500u16,
-                message: format!("Failed to parse status response: {}", e),
+                message: "Invalid Fal queue status response".into(),
             })?;
 
         Ok(status)
@@ -284,91 +299,67 @@ impl FalAIProvider {
     /// Fal.ai returns a canonical status_url in the submit response.
     /// Makes a direct GET request to the status URL with authentication.
     pub async fn queue_status_by_url(&self, status_url: &str) -> KalpaResult<FalQueueStatus> {
-        // Build the URL with logs parameter
-        let url = if status_url.contains('?') {
-            format!("{}&logs=1", status_url)
-        } else {
-            format!("{}?logs=1", status_url)
-        };
+        let mut url = Self::trusted_queue_url(status_url)?;
+        url.query_pairs_mut().append_pair("logs", "1");
+        let response = self.http_client.get(url).send().await?;
+        crate::http::read_json(crate::http::check_response(response, "fal").await?).await
+    }
 
-        // Make a direct GET request to the status URL
-        let response = self.http_client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| KalpaError::ProviderError {
-                status: 500u16,
-                message: format!("Fal AI queue status request failed: {}", e),
-            })?;
-
-        if !response.status().is_success() {
-            let status_code = response.status().as_u16();
-            let body = response.text().await.unwrap_or_default();
-            return Err(KalpaError::ProviderError {
-                status: status_code,
-                message: format!("Fal AI queue status check failed (HTTP {}): {}", status_code, body),
-            });
+    fn trusted_queue_url(value: &str) -> KalpaResult<reqwest::Url> {
+        let url = reqwest::Url::parse(value)
+            .map_err(|_| KalpaError::Config("Invalid Fal queue URL".into()))?;
+        if url.scheme() != "https"
+            || url.host_str() != Some("queue.fal.run")
+            || url.port_or_known_default() != Some(443)
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(KalpaError::Config(
+                "Fal queue URL must use https://queue.fal.run".into(),
+            ));
         }
-
-        let status: FalQueueStatus = response.json().await
-            .map_err(|e| KalpaError::ProviderError {
-                status: 500u16,
-                message: format!("Failed to parse status response: {}", e),
-            })?;
-
-        Ok(status)
+        Ok(url)
     }
 
     /// Parse a fal.ai response URL to extract model_id and request_id.
     /// Expected format: https://queue.fal.run/{model_id}/requests/{request_id}
     fn parse_response_url(response_url: &str) -> KalpaResult<(String, String)> {
-        // Strip query parameters if present
-        let url_path = response_url.split('?').next().unwrap_or(response_url);
-
-        // Remove the base URL prefix to get the path
-        let path = if let Some(stripped) = url_path.strip_prefix("https://queue.fal.run/") {
-            stripped
-        } else if let Some(stripped) = url_path.strip_prefix("http://queue.fal.run/") {
-            stripped
-        } else {
-            url_path
-        };
-
-        // Find the "/requests/" separator
-        if let Some(requests_idx) = path.find("/requests/") {
-            let model_id = &path[..requests_idx];
-            let request_id = &path[requests_idx + "/requests/".len()..];
-
-            Ok((model_id.to_string(), request_id.to_string()))
-        } else {
-            Err(KalpaError::ProviderError {
-                status: 400u16,
-                message: format!(
-                    "Invalid fal.ai response URL format. Expected '.../{{model_id}}/requests/{{request_id}}', got: {}",
-                    response_url
-                ),
-            })
+        let url = Self::trusted_queue_url(response_url)?;
+        let path = url.path().trim_start_matches('/');
+        let (model_id, request_id) = path
+            .split_once("/requests/")
+            .ok_or_else(|| KalpaError::Config("Invalid Fal result URL path".into()))?;
+        validate_model_path(model_id)?;
+        if request_id.is_empty()
+            || !request_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err(KalpaError::Config("Invalid Fal request ID".into()));
         }
+        Ok((model_id.into(), request_id.into()))
     }
 
     /// Get the result of a completed queue request.
     /// Returns the raw JSON value of the result.
-    pub async fn queue_result(&self, model_id: &str, request_id: &str) -> KalpaResult<serde_json::Value> {
+    pub async fn queue_result(
+        &self,
+        model_id: &str,
+        request_id: &str,
+    ) -> KalpaResult<serde_json::Value> {
+        validate_model_path(model_id)?;
         let result = self
             .client
             .get_queue_result(model_id, request_id)
             .await
-            .map_err(|e| KalpaError::ProviderError {
-                status: 500u16,
-                message: format!("Failed to fetch result: {}", e),
-            })?
+            .map_err(crate::http::generated_error)?
             .into_inner();
 
-        serde_json::to_value(&result)
-            .map_err(|e| KalpaError::ProviderError {
-                status: 500u16,
-                message: format!("Failed to serialize result: {}", e),
-            })
+        serde_json::to_value(&result).map_err(|e| KalpaError::ProviderError {
+            status: 500u16,
+            message: format!("Failed to serialize result: {}", e),
+        })
     }
 
     /// Get the result of a completed queue request using the canonical response URL.
@@ -416,17 +407,36 @@ impl FalAIProvider {
     /// Submit and wait for queue completion (with polling).
     /// Uses the canonical status_url and response_url from the submit response via
     /// direct GET requests, since fal.ai uses shortened model paths in those URLs.
-    async fn queue_submit_and_wait<T, R>(
-        &self,
-        model_id: &str,
-        request: &T,
-    ) -> KalpaResult<R>
+    async fn queue_submit_and_wait<T, R>(&self, model_id: &str, request: &T) -> KalpaResult<R>
     where
         T: Serialize,
         R: for<'de> Deserialize<'de>,
     {
-        // Submit to queue using progenitor-generated method
+        tokio::time::timeout(
+            Duration::from_secs(900),
+            self.queue_submit_and_wait_inner(model_id, request),
+        )
+        .await
+        .map_err(|_| KalpaError::ProviderError {
+            status: 504,
+            message: "Fal generation deadline exceeded".into(),
+        })?
+    }
+
+    async fn queue_submit_and_wait_inner<T, R>(&self, model_id: &str, request: &T) -> KalpaResult<R>
+    where
+        T: Serialize,
+        R: for<'de> Deserialize<'de>,
+    {
         let submit_response = self.queue_submit(model_id, request).await?;
+        let mut cancellation = crate::provider::CancelOnDrop {
+            provider: std::sync::Arc::new(self.clone()),
+            handle: Some(JobHandle {
+                provider_request_id: submit_response.request_id.clone(),
+                poll_url: Some(submit_response.status_url.clone()),
+                response_url: Some(submit_response.response_url.clone()),
+            }),
+        };
 
         // Use the canonical URLs from the submit response for polling
         let status_url = submit_response.status_url.clone();
@@ -438,20 +448,22 @@ impl FalAIProvider {
 
             match status {
                 FalQueueStatus::Completed { .. } => {
+                    cancellation.handle = None;
                     // Fetch the actual result using direct GET to the response_url
                     let result_json = self.queue_result_by_url(&response_url).await?;
 
-                    return serde_json::from_value(result_json).map_err(|e| {
+                    return serde_json::from_value(result_json).map_err(|_| {
                         KalpaError::ProviderError {
                             status: 500u16,
-                            message: format!("Failed to parse result: {}", e),
+                            message: "Invalid Fal result response".into(),
                         }
                     });
                 }
-                FalQueueStatus::Failed { error, .. } => {
+                FalQueueStatus::Failed { error: _, .. } => {
+                    cancellation.handle = None;
                     return Err(KalpaError::ProviderError {
                         status: 500u16,
-                        message: format!("Fal AI generation failed: {}", error),
+                        message: "Fal AI generation failed".into(),
                     });
                 }
                 FalQueueStatus::InQueue { .. } => {
@@ -569,13 +581,14 @@ impl VideoGenerationProvider for FalAIProvider {
         // Determine if this is text-to-video or image-to-video based on model and input
         let response: FalAIVideoResponse = if request.model.contains("image-to-video") {
             // Image-to-video
-            let image_url = request
-                .image_url
-                .as_ref()
-                .ok_or_else(|| KalpaError::ProviderError {
-                    status: 400u16,
-                    message: "image_url required for image-to-video models".to_string(),
-                })?;
+            let image_url =
+                request
+                    .image_url
+                    .as_ref()
+                    .ok_or_else(|| KalpaError::ProviderError {
+                        status: 400u16,
+                        message: "image_url required for image-to-video models".to_string(),
+                    })?;
 
             let fal_request = FalAIImageToVideoRequest {
                 image_url: image_url.clone(),
@@ -584,7 +597,8 @@ impl VideoGenerationProvider for FalAIProvider {
             };
 
             // Use queue-based API for all video generations
-            self.queue_submit_and_wait(&request.model, &fal_request).await?
+            self.queue_submit_and_wait(&request.model, &fal_request)
+                .await?
         } else {
             // Text-to-video
             let fal_request = FalAITextToVideoRequest {
@@ -593,26 +607,23 @@ impl VideoGenerationProvider for FalAIProvider {
             };
 
             // Use queue-based API for all video generations
-            self.queue_submit_and_wait(&request.model, &fal_request).await?
+            self.queue_submit_and_wait(&request.model, &fal_request)
+                .await?
         };
 
         // Handle both response formats: single video or videos array
         let videos = if let Some(video) = response.video {
             vec![GeneratedVideo { url: video.url }]
         } else if !response.videos.is_empty() {
-            response.videos
+            response
+                .videos
                 .into_iter()
                 .map(|v| GeneratedVideo { url: v.url })
                 .collect()
         } else {
-            // Try to extract from raw response data for debugging
-            let debug_msg = format!(
-                "No video in response. Response structure: {:?}",
-                serde_json::to_string(&response).unwrap_or_else(|_| "unable to serialize".to_string())
-            );
             return Err(KalpaError::ProviderError {
-                status: 500u16,
-                message: debug_msg,
+                status: 502,
+                message: "No video in Fal response".into(),
             });
         };
 
@@ -635,6 +646,7 @@ impl FalAIProvider {
         model_id: &str,
         body: &serde_json::Value,
     ) -> KalpaResult<FalQueueSubmitResponse> {
+        validate_model_path(model_id)?;
         let resp = self
             .http_client
             .post(format!("https://queue.fal.run/{}", model_id))
@@ -642,9 +654,8 @@ impl FalAIProvider {
             .send()
             .await?;
         let resp = crate::http::check_response(resp, "fal").await?;
-        resp.json().await.map_err(KalpaError::from)
+        crate::http::read_json(resp).await
     }
-
 }
 
 #[async_trait]
@@ -711,30 +722,48 @@ impl GenerationProvider for FalAIProvider {
         }))
     }
 
+    async fn cancel(&self, handle: &JobHandle) -> KalpaResult<()> {
+        let response_url = handle
+            .response_url
+            .as_deref()
+            .ok_or_else(|| KalpaError::Config("Fal handle missing result URL".into()))?;
+        let (model, request) = Self::parse_response_url(response_url)?;
+        let url = format!("https://queue.fal.run/{model}/requests/{request}/cancel");
+        crate::http::check_response(self.http_client.put(url).send().await?, "fal cancel").await?;
+        Ok(())
+    }
+
     async fn poll(&self, handle: &JobHandle) -> KalpaResult<PollStatus> {
-        let poll_url = handle.poll_url.as_deref().ok_or_else(|| KalpaError::ProviderError {
-            status: 500,
-            message: "fal job handle missing poll_url".into(),
-        })?;
+        let poll_url = handle
+            .poll_url
+            .as_deref()
+            .ok_or_else(|| KalpaError::ProviderError {
+                status: 500,
+                message: "fal job handle missing poll_url".into(),
+            })?;
 
         match self.queue_status_by_url(poll_url).await? {
-            FalQueueStatus::InQueue { queue_position, .. } => {
-                Ok(PollStatus::InQueue { position: queue_position })
-            }
+            FalQueueStatus::InQueue { queue_position, .. } => Ok(PollStatus::InQueue {
+                position: queue_position,
+            }),
             FalQueueStatus::InProgress { .. } => Ok(PollStatus::InProgress),
             FalQueueStatus::Failed { error, .. } => Ok(PollStatus::Failed(error)),
             FalQueueStatus::Completed { .. } => {
-                let response_url = handle.response_url.as_deref().ok_or_else(|| {
-                    KalpaError::ProviderError {
-                        status: 500,
-                        message: "fal job handle missing response_url".into(),
-                    }
-                })?;
+                let response_url =
+                    handle
+                        .response_url
+                        .as_deref()
+                        .ok_or_else(|| KalpaError::ProviderError {
+                            status: 500,
+                            message: "fal job handle missing response_url".into(),
+                        })?;
                 let result_json = self.queue_result_by_url(response_url).await?;
                 // Parse generically: image responses carry `images[]`; video
                 // responses carry `video` or `videos[]`.
                 let mut parts = Vec::new();
-                if let Ok(images) = serde_json::from_value::<FalAIImageResponse>(result_json.clone()) {
+                if let Ok(images) =
+                    serde_json::from_value::<FalAIImageResponse>(result_json.clone())
+                {
                     parts.extend(images.images.into_iter().map(|img| Part::Image {
                         url: Some(img.url),
                         b64_data: None,
@@ -744,7 +773,10 @@ impl GenerationProvider for FalAIProvider {
                 if parts.is_empty() {
                     if let Ok(video) = serde_json::from_value::<FalAIVideoResponse>(result_json) {
                         if let Some(v) = video.video {
-                            parts.push(Part::Video { url: v.url, mime: Some("video/mp4".into()) });
+                            parts.push(Part::Video {
+                                url: v.url,
+                                mime: Some("video/mp4".into()),
+                            });
                         }
                         parts.extend(video.videos.into_iter().map(|v| Part::Video {
                             url: v.url,
@@ -759,5 +791,56 @@ impl GenerationProvider for FalAIProvider {
                 }))
             }
         }
+    }
+}
+
+fn validate_model_path(model: &str) -> KalpaResult<()> {
+    if model.split('/').any(|part| {
+        part.is_empty()
+            || part == "."
+            || part == ".."
+            || !part
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    }) {
+        return Err(KalpaError::Config("Invalid Fal model path".into()));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    #[test]
+    fn rejects_untrusted_canonical_queue_urls() {
+        for url in [
+            "https://evil.example/model/requests/id/status",
+            "http://queue.fal.run/model/requests/id",
+            "https://queue.fal.run:444/model/requests/id",
+            "https://user@queue.fal.run/model/requests/id",
+        ] {
+            assert!(FalAIProvider::trusted_queue_url(url).is_err());
+            assert!(FalAIProvider::parse_response_url(url).is_err());
+        }
+        assert_eq!(
+            FalAIProvider::parse_response_url(
+                "https://queue.fal.run/fal-ai/flux/dev/requests/abc-123?logs=1"
+            )
+            .unwrap(),
+            ("fal-ai/flux/dev".into(), "abc-123".into())
+        );
+    }
+    #[test]
+    fn rejects_model_path_injection() {
+        for model in [
+            "../model",
+            "model?key=secret",
+            "model#fragment",
+            "model/%2f",
+            "model//other",
+        ] {
+            assert!(validate_model_path(model).is_err());
+        }
+        assert!(validate_model_path("fal-ai/kling-video/v1.5/standard/text-to-video").is_ok());
     }
 }

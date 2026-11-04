@@ -392,7 +392,7 @@ Default AIMD parameters:
 | `max` | 64 | Ceiling (backstop) |
 | `decrease_factor` | 0.5 | Multiplicative decrease ratio |
 | `cooldown` | 500ms | Debounce window for decrease signals |
-| `latency_threshold` | 2.0x | Latency gradient trip ratio |
+| `latency_threshold` | 2.0x | Latency gradient trip ratio; `f64::INFINITY` disables latency-driven decreases while preserving concurrency bounds and explicit backpressure |
 
 Retry with exponential backoff is also available for transient failures (network errors, 5xx, 429), with configurable max attempts, initial backoff, and multiplier.
 
@@ -426,3 +426,9 @@ For citation requests or questions, contact:
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) for the full text.
+
+
+Provider schema provenance and offline regeneration are documented in
+[`crates/libgen/specs/README.md`](crates/libgen/specs/README.md). Transport limits,
+credential handling, dependency changes and validation are recorded in the
+[2026-11-04 hardening review](docs/HARDENING_2026-11-04.md).

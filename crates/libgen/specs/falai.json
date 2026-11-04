@@ -1,101 +1,97 @@
 {
-  "openapi": "3.0.3",
-  "info": {
-    "title": "Fal AI API",
-    "version": "1.0.0",
-    "description": "Fal AI API spec for image and video generation with queue support"
+  "components": {
+    "schemas": {
+      "FalLogEntry": {
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object",
+        "x-kalpa-source-schema": "LogEntry"
+      },
+      "FalQueueSubmitResponse": {
+        "properties": {
+          "cancel_url": {
+            "nullable": true,
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "response_url": {
+            "description": "The URL of the result.",
+            "nullable": true,
+            "type": "string"
+          },
+          "status_url": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id"
+        ],
+        "type": "object",
+        "x-kalpa-source-schema": "SubmitResponse"
+      }
+    },
+    "securitySchemes": {
+      "providerAuth": {
+        "in": "header",
+        "name": "Authorization",
+        "type": "apiKey"
+      }
+    }
   },
-  "servers": [
-    {
-      "url": "https://queue.fal.run"
-    }
-  ],
-  "security": [
-    {
-      "apiKey": []
-    }
-  ],
+  "info": {
+    "description": "Generated from official source by scripts/schema-refresh.py. This is a compatibility projection, not the full upstream API. See specs/README.md for retained fields and transformations.",
+    "title": "Kalpa falai supported-operation projection",
+    "version": "v1"
+  },
+  "openapi": "3.0.3",
   "paths": {
     "/{model_id}": {
       "post": {
         "operationId": "submitToQueue",
-        "summary": "Submit request to queue",
         "parameters": [
           {
-            "name": "model_id",
             "in": "path",
+            "name": "model_id",
             "required": true,
             "schema": {
               "type": "string"
-            },
-            "description": "Model endpoint ID (e.g., 'fal-ai/flux/dev')"
+            }
           }
         ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
+                "description": "The model input. Each model has its own input schema. See the model page in the [Model API Reference](https://fal.ai/docs/model-api-reference).",
                 "type": "object"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
-            "description": "Queue submission response",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/FalQueueSubmitResponse"
                 }
               }
-            }
-          }
-        }
-      }
-    },
-    "/{model_id}/requests/{request_id}/status": {
-      "get": {
-        "operationId": "getQueueStatus",
-        "summary": "Get status of a queued request",
-        "parameters": [
-          {
-            "name": "model_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
             },
-            "description": "Model endpoint ID (e.g., 'fal-ai/flux/dev')"
-          },
-          {
-            "name": "request_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "logs",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Queue status",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
+            "description": "Successful provider response"
           }
         }
       }
@@ -103,20 +99,18 @@
     "/{model_id}/requests/{request_id}": {
       "get": {
         "operationId": "getQueueResult",
-        "summary": "Get result from completed queue request",
         "parameters": [
           {
-            "name": "model_id",
             "in": "path",
+            "name": "model_id",
             "required": true,
             "schema": {
               "type": "string"
-            },
-            "description": "Model endpoint ID (e.g., 'fal-ai/flux/dev')"
+            }
           },
           {
-            "name": "request_id",
             "in": "path",
+            "name": "request_id",
             "required": true,
             "schema": {
               "type": "string"
@@ -125,62 +119,78 @@
         ],
         "responses": {
           "200": {
-            "description": "Queue result response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "description": "The model output. Each model has its own output schema.",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response"
+          }
+        }
+      }
+    },
+    "/{model_id}/requests/{request_id}/status": {
+      "get": {
+        "operationId": "getQueueStatus",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "logs",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object"
                 }
               }
-            }
+            },
+            "description": "Successful provider response"
           }
         }
       }
     }
   },
-  "components": {
-    "securitySchemes": {
-      "apiKey": {
-        "type": "apiKey",
-        "in": "header",
-        "name": "Authorization",
-        "description": "API key must be prefixed with 'Key ', e.g. Authorization: Key YOUR_API_KEY"
-      }
-    },
-    "schemas": {
-      "FalQueueSubmitResponse": {
-        "type": "object",
-        "required": ["request_id", "status_url", "response_url"],
-        "properties": {
-          "request_id": {
-            "type": "string"
-          },
-          "status_url": {
-            "type": "string"
-          },
-          "response_url": {
-            "type": "string"
-          },
-          "cancel_url": {
-            "type": "string"
-          }
-        }
-      },
-      "FalLogEntry": {
-        "type": "object",
-        "required": ["message"],
-        "properties": {
-          "message": {
-            "type": "string"
-          },
-          "level": {
-            "type": "string"
-          },
-          "timestamp": {
-            "type": "string"
-          }
-        }
-      }
+  "security": [
+    {
+      "providerAuth": []
     }
+  ],
+  "servers": [
+    {
+      "url": "https://queue.fal.run"
+    }
+  ],
+  "x-kalpa-upstream": {
+    "bytes": 41280,
+    "fetched_at": "2026-11-04",
+    "revision": "v1",
+    "sha256": "92ba49b53e13423fb06d507126c0cd70e872818833c2b6df98e56223c083ee97",
+    "url": "https://fal.ai/docs/api-reference/inference-api/openapi/queue.json"
   }
 }

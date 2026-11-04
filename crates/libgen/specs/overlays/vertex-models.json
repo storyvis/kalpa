@@ -1,0 +1,155 @@
+{
+  "description": "Existing Kalpa Imagen/Veo model-specific adapter schemas. These are local projections, not supplied by Google Discovery, which declares prediction instances/parameters/results as arbitrary JSON. Reviewed separately from the official API envelope.",
+  "schemas": {
+    "PredictRequest": {
+      "type": "object",
+      "required": [
+        "instances"
+      ],
+      "properties": {
+        "instances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/ImageInstance"
+          },
+          "description": "Array of instances with prompts"
+        },
+        "parameters": {
+          "$ref": "#/components/schemas/ImageParameters"
+        }
+      }
+    },
+    "ImageInstance": {
+      "type": "object",
+      "required": [
+        "prompt"
+      ],
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "Text prompt for image generation"
+        }
+      }
+    },
+    "ImageParameters": {
+      "type": "object",
+      "properties": {
+        "sampleCount": {
+          "type": "integer",
+          "nullable": true,
+          "default": 1,
+          "minimum": 1,
+          "maximum": 4,
+          "description": "Number of images to generate"
+        },
+        "aspectRatio": {
+          "type": "string",
+          "nullable": true,
+          "description": "Aspect ratio (e.g., '1:1', '16:9', '9:16')"
+        },
+        "negativePrompt": {
+          "type": "string",
+          "nullable": true,
+          "description": "Negative prompt to avoid certain elements"
+        }
+      }
+    },
+    "PredictResponse": {
+      "type": "object",
+      "properties": {
+        "predictions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/ImagePrediction"
+          },
+          "nullable": true,
+          "description": "Array of generated images"
+        }
+      }
+    },
+    "ImagePrediction": {
+      "type": "object",
+      "properties": {
+        "bytesBase64Encoded": {
+          "type": "string",
+          "format": "byte",
+          "description": "Base64 encoded image data"
+        },
+        "mimeType": {
+          "type": "string",
+          "default": "image/png",
+          "description": "MIME type of the generated image"
+        }
+      }
+    },
+    "VideoPredictRequest": {
+      "type": "object",
+      "required": [
+        "instances"
+      ],
+      "properties": {
+        "instances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/VideoInstance"
+          },
+          "description": "Array of video generation instances"
+        },
+        "parameters": {
+          "$ref": "#/components/schemas/VideoParameters"
+        }
+      }
+    },
+    "VideoInstance": {
+      "type": "object",
+      "required": [
+        "prompt"
+      ],
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "Text prompt for video generation"
+        },
+        "image": {
+          "$ref": "#/components/schemas/InlineData"
+        }
+      }
+    },
+    "VideoParameters": {
+      "type": "object",
+      "properties": {
+        "sampleCount": {
+          "type": "integer",
+          "nullable": true,
+          "default": 1,
+          "description": "Number of videos to generate"
+        },
+        "aspectRatio": {
+          "type": "string",
+          "nullable": true,
+          "description": "Aspect ratio (e.g., '16:9', '9:16')"
+        },
+        "storageUri": {
+          "type": "string",
+          "nullable": true,
+          "description": "GCS bucket URI for output videos (required for Veo 2.0)"
+        }
+      }
+    },
+    "VideoPrediction": {
+      "type": "object",
+      "properties": {
+        "bytesBase64Encoded": {
+          "type": "string",
+          "format": "byte",
+          "description": "Base64 encoded video data"
+        },
+        "mimeType": {
+          "type": "string",
+          "default": "video/mp4",
+          "description": "MIME type of the generated video"
+        }
+      }
+    }
+  }
+}

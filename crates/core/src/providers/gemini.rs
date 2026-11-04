@@ -89,7 +89,9 @@ impl GeminiProvider {
     pub fn new(api_key: String) -> Self {
         Self {
             api_key,
-            http: reqwest::Client::new(),
+            http: crate::http::client_builder()
+                .build()
+                .expect("HTTP client initialization"),
         }
     }
 
@@ -111,7 +113,11 @@ impl GeminiProvider {
                     text: Some(text.clone()),
                     inline_data: None,
                 }),
-                Part::Image { b64_data: Some(data), mime, .. } => Some(GPart {
+                Part::Image {
+                    b64_data: Some(data),
+                    mime,
+                    ..
+                } => Some(GPart {
                     text: None,
                     inline_data: Some(InlineData {
                         mime_type: mime.clone().unwrap_or_else(|| "image/png".into()),
@@ -138,22 +144,28 @@ impl GenerationProvider for GeminiProvider {
         let model = request.model.split().1.to_string();
         let body = GenerateContentRequest {
             contents: Self::contents_from(request),
-            generation_config: request.response_modalities.as_ref().map(|mods| GenerationConfig {
-                response_modalities: mods.iter().map(|m| Self::modality_to_g(*m).to_string()).collect(),
-            }),
+            generation_config: request
+                .response_modalities
+                .as_ref()
+                .map(|mods| GenerationConfig {
+                    response_modalities: mods
+                        .iter()
+                        .map(|m| Self::modality_to_g(*m).to_string())
+                        .collect(),
+                }),
         };
 
         let url = format!("{BASE_URL}/models/{model}:generateContent");
         let resp = self
             .http
             .post(&url)
-            .query(&[("key", &self.api_key)])
+            .header("x-goog-api-key", crate::http::secret_header(&self.api_key))
             .json(&body)
             .send()
             .await?;
         let resp = check_response(resp, "gemini").await?;
 
-        let parsed: GenerateContentResponse = resp.json().await?;
+        let parsed: GenerateContentResponse = crate::http::read_json(resp).await?;
         let mut parts = Vec::new();
         if let Some(cand) = parsed.candidates.into_iter().next() {
             if let Some(content) = cand.content {
@@ -185,6 +197,8 @@ impl GenerationProvider for GeminiProvider {
     }
 
     async fn poll(&self, _handle: &JobHandle) -> KalpaResult<PollStatus> {
-        Err(KalpaError::Other("gemini is synchronous; poll not supported".into()))
+        Err(KalpaError::Other(
+            "gemini is synchronous; poll not supported".into(),
+        ))
     }
 }

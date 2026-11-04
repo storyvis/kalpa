@@ -25,13 +25,10 @@ impl ClaudeProvider {
     pub fn new(api_key: String) -> Self {
         let client = claude::Client::new_with_client(
             "https://api.anthropic.com",
-            reqwest::Client::builder()
+            crate::http::client_builder()
                 .default_headers({
                     let mut headers = reqwest::header::HeaderMap::new();
-                    headers.insert(
-                        "x-api-key",
-                        reqwest::header::HeaderValue::from_str(&api_key).unwrap(),
-                    );
+                    headers.insert("x-api-key", crate::http::secret_header(&api_key));
                     headers.insert(
                         "anthropic-version",
                         reqwest::header::HeaderValue::from_static("2023-06-01"),
@@ -136,10 +133,7 @@ impl CompletionProvider for ClaudeProvider {
             .client
             .create_message(&claude_request)
             .await
-            .map_err(|e| KalpaError::ProviderError {
-                status: 500,
-                message: format!("Claude API error: {}", e),
-            })?;
+            .map_err(crate::http::generated_error)?;
 
         // Extract the response content
         let content = response
@@ -159,7 +153,10 @@ impl CompletionProvider for ClaudeProvider {
 
         Ok(CompletionResponse {
             content,
-            model: response.model.clone().unwrap_or_else(|| request.model.clone()),
+            model: response
+                .model
+                .clone()
+                .unwrap_or_else(|| request.model.clone()),
             usage,
             finish_reason: response.stop_reason.clone(),
         })
@@ -198,7 +195,10 @@ impl GenerationProvider for ClaudeProvider {
 
         let comp_req = CompletionRequest {
             model: model.clone(),
-            messages: vec![Message { role: Role::User, content: prompt }],
+            messages: vec![Message {
+                role: Role::User,
+                content: prompt,
+            }],
             max_tokens: Some(1024),
             temperature: None,
             top_p: None,
@@ -213,6 +213,8 @@ impl GenerationProvider for ClaudeProvider {
     }
 
     async fn poll(&self, _handle: &JobHandle) -> KalpaResult<PollStatus> {
-        Err(KalpaError::Other("claude generation is synchronous; poll not supported".into()))
+        Err(KalpaError::Other(
+            "claude generation is synchronous; poll not supported".into(),
+        ))
     }
 }

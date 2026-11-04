@@ -1,83 +1,578 @@
 {
-  "openapi": "3.0.3",
-  "info": {
-    "title": "Vertex AI Gemini API",
-    "version": "1.0.0",
-    "description": "Unified Vertex AI API for text, image, and video generation with Gemini models"
-  },
-  "servers": [
-    {
-      "url": "https://{location}-aiplatform.googleapis.com",
-      "variables": {
-        "location": {
-          "default": "us-central1",
-          "description": "Cloud region (us-central1, europe-west4, asia-southeast1)"
-        }
+  "components": {
+    "schemas": {
+      "Candidate": {
+        "properties": {
+          "citationMetadata": {
+            "$ref": "#/components/schemas/CitationMetadata"
+          },
+          "content": {
+            "$ref": "#/components/schemas/Content"
+          },
+          "finishReason": {
+            "description": "Output only. The reason why the model stopped generating tokens. If empty, the model has not stopped generating.",
+            "type": "string"
+          },
+          "safetyRatings": {
+            "items": {
+              "$ref": "#/components/schemas/SafetyRating"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "GoogleCloudAiplatformV1Candidate"
+      },
+      "CitationMetadata": {
+        "properties": {
+          "citations": {
+            "description": "Output only. A list of citations for the content.",
+            "items": {
+              "description": "A citation for a piece of generatedcontent.",
+              "properties": {
+                "endIndex": {
+                  "description": "Output only. The end index of the citation in the content.",
+                  "type": "integer"
+                },
+                "license": {
+                  "description": "Output only. The license of the source of the citation.",
+                  "type": "string"
+                },
+                "publicationDate": {
+                  "description": "Represents a whole or partial calendar date, such as a birthday. The time of day and time zone are either specified elsewhere or are insignificant. The date is relative to the Gregorian Calendar. This can represent one of the following: * A full date, with non-zero year, month, and day values. * A month and day, with a zero year (for example, an anniversary). * A year on its own, with a zero month and a zero day. * A year and month, with a zero day (for example, a credit card expiration date). Related types: * google.type.TimeOfDay * google.type.DateTime * google.protobuf.Timestamp",
+                  "properties": {
+                    "day": {
+                      "description": "Day of a month. Must be from 1 to 31 and valid for the year and month, or 0 to specify a year by itself or a year and month where the day isn't significant.",
+                      "type": "integer"
+                    },
+                    "month": {
+                      "description": "Month of a year. Must be from 1 to 12, or 0 to specify a year without a month and day.",
+                      "type": "integer"
+                    },
+                    "year": {
+                      "description": "Year of the date. Must be from 1 to 9999, or 0 to specify a date without a year.",
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                },
+                "startIndex": {
+                  "description": "Output only. The start index of the citation in the content.",
+                  "type": "integer"
+                },
+                "title": {
+                  "description": "Output only. The title of the source of the citation.",
+                  "type": "string"
+                },
+                "uri": {
+                  "description": "Output only. The URI of the source of the citation.",
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "GoogleCloudAiplatformV1CitationMetadata"
+      },
+      "Content": {
+        "properties": {
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/Part"
+            },
+            "type": "array"
+          },
+          "role": {
+            "description": "Optional. The producer of the content. Must be either 'user' or 'model'. If not set, the service will default to 'user'.",
+            "type": "string"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "GoogleCloudAiplatformV1Content"
+      },
+      "FileData": {
+        "properties": {
+          "fileUri": {
+            "description": "Required. The URI of the file in Google Cloud Storage.",
+            "type": "string"
+          },
+          "mimeType": {
+            "description": "Required. The IANA standard MIME type of the source data.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mimeType",
+          "fileUri"
+        ],
+        "type": "object",
+        "x-kalpa-source-schema": "GoogleCloudAiplatformV1FileData"
+      },
+      "GenerateRequest": {
+        "properties": {
+          "contents": {
+            "items": {
+              "$ref": "#/components/schemas/Content"
+            },
+            "type": "array"
+          },
+          "generationConfig": {
+            "$ref": "#/components/schemas/GenerationConfig"
+          },
+          "safetySettings": {
+            "items": {
+              "$ref": "#/components/schemas/SafetySetting"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "contents"
+        ],
+        "type": "object",
+        "x-kalpa-source-schema": "GoogleCloudAiplatformV1GenerateContentRequest"
+      },
+      "GenerateResponse": {
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/Candidate"
+            },
+            "type": "array"
+          },
+          "usageMetadata": {
+            "$ref": "#/components/schemas/UsageMetadata"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "GoogleCloudAiplatformV1GenerateContentResponse"
+      },
+      "GenerationConfig": {
+        "properties": {
+          "maxOutputTokens": {
+            "description": "Optional. The maximum number of tokens to generate in the response. A token is approximately four characters. The default value varies by model. This parameter can be used to control the length of the generated text and prevent overly long responses.",
+            "type": "integer"
+          },
+          "responseMimeType": {
+            "deprecated": true,
+            "description": "Optional. The IANA standard MIME type of the response. The model will generate output that conforms to this MIME type. Supported values include 'text/plain' (default) and 'application/json'. The model needs to be prompted to output the appropriate response type, otherwise the behavior is undefined. Deprecated: Use `response_format` instead.",
+            "type": "string"
+          },
+          "responseModalities": {
+            "description": "Optional. The modalities of the response. The model will generate a response that includes all the specified modalities. For example, if this is set to `[TEXT, IMAGE]`, the response will include both text and an image.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "stopSequences": {
+            "description": "Optional. A list of character sequences that will stop the model from generating further tokens. If a stop sequence is generated, the output will end at that point. This is useful for controlling the length and structure of the output. For example, you can use [\"\\n\", \"###\"] to stop generation at a new line or a specific marker.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "temperature": {
+            "description": "Optional. Controls the randomness of the output. A higher temperature results in more creative and diverse responses, while a lower temperature makes the output more predictable and focused. The valid range is (0.0, 2.0].",
+            "type": "number"
+          },
+          "topK": {
+            "description": "Optional. Specifies the top-k sampling threshold. The model considers only the top k most probable tokens for the next token. This can be useful for generating more coherent and less random text. For example, a `top_k` of 40 means the model will choose the next word from the 40 most likely words.",
+            "type": "number"
+          },
+          "topP": {
+            "description": "Optional. Specifies the nucleus sampling threshold. The model considers only the smallest set of tokens whose cumulative probability is at least `top_p`. This helps generate more diverse and less repetitive responses. For example, a `top_p` of 0.9 means the model considers tokens until the cumulative probability of the tokens to select from reaches 0.9. It's recommended to adjust either temperature or `top_p`, but not both.",
+            "type": "number"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "GoogleCloudAiplatformV1GenerationConfig"
+      },
+      "ImageInstance": {
+        "properties": {
+          "prompt": {
+            "description": "Text prompt for image generation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "ImageParameters": {
+        "properties": {
+          "aspectRatio": {
+            "description": "Aspect ratio (e.g., '1:1', '16:9', '9:16')",
+            "nullable": true,
+            "type": "string"
+          },
+          "negativePrompt": {
+            "description": "Negative prompt to avoid certain elements",
+            "nullable": true,
+            "type": "string"
+          },
+          "sampleCount": {
+            "default": 1,
+            "description": "Number of images to generate",
+            "maximum": 4,
+            "minimum": 1,
+            "nullable": true,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "ImagePrediction": {
+        "properties": {
+          "bytesBase64Encoded": {
+            "description": "Base64 encoded image data",
+            "format": "byte",
+            "type": "string"
+          },
+          "mimeType": {
+            "default": "image/png",
+            "description": "MIME type of the generated image",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "InlineData": {
+        "properties": {
+          "data": {
+            "description": "Required. The raw bytes of the data.",
+            "type": "string"
+          },
+          "mimeType": {
+            "description": "Required. The IANA standard MIME type of the source data.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mimeType",
+          "data"
+        ],
+        "type": "object",
+        "x-kalpa-source-schema": "GoogleCloudAiplatformV1Blob"
+      },
+      "OperationError": {
+        "properties": {
+          "code": {
+            "description": "The status code, which should be an enum value of google.rpc.Code.",
+            "type": "integer"
+          },
+          "message": {
+            "description": "A developer-facing error message, which should be in English. Any user-facing error message should be localized and sent in the google.rpc.Status.details field, or localized by the client.",
+            "type": "string"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "GoogleRpcStatus"
+      },
+      "OperationResponse": {
+        "properties": {
+          "done": {
+            "description": "If the value is `false`, it means the operation is still in progress. If `true`, the operation is completed, and either `error` or `response` is available.",
+            "type": "boolean"
+          },
+          "error": {
+            "$ref": "#/components/schemas/OperationError"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "description": "Properties of the object. Contains field @type with type URL."
+            },
+            "description": "Service-specific metadata associated with the operation. It typically contains progress information and common metadata such as create time. Some services might not provide such metadata. Any method that returns a long-running operation should document the metadata type, if any.",
+            "type": "object"
+          },
+          "name": {
+            "description": "The server-assigned name, which is only unique within the same service that originally returns it. If you use the default HTTP mapping, the `name` should be a resource name ending with `operations/{unique_id}`.",
+            "type": "string"
+          },
+          "response": {
+            "additionalProperties": {
+              "description": "Properties of the object. Contains field @type with type URL."
+            },
+            "description": "The normal, successful response of the operation. If the original method returns no data on success, such as `Delete`, the response is `google.protobuf.Empty`. If the original method is standard `Get`/`Create`/`Update`, the response should be the resource. For other methods, the response should have the type `XxxResponse`, where `Xxx` is the original method name. For example, if the original method name is `TakeSnapshot()`, the inferred response type is `TakeSnapshotResponse`.",
+            "type": "object"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "GoogleLongrunningOperation"
+      },
+      "Part": {
+        "properties": {
+          "fileData": {
+            "$ref": "#/components/schemas/FileData"
+          },
+          "inlineData": {
+            "$ref": "#/components/schemas/InlineData"
+          },
+          "text": {
+            "description": "Optional. The text content of the part. When sent from the VSCode Gemini Code Assist extension, references to @mentioned items will be converted to markdown boldface text. For example `@my-repo` will be converted to and sent as `**my-repo**` by the IDE agent.",
+            "type": "string"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "GoogleCloudAiplatformV1Part"
+      },
+      "PredictRequest": {
+        "properties": {
+          "instances": {
+            "description": "Array of instances with prompts",
+            "items": {
+              "$ref": "#/components/schemas/ImageInstance"
+            },
+            "type": "array"
+          },
+          "parameters": {
+            "$ref": "#/components/schemas/ImageParameters"
+          }
+        },
+        "required": [
+          "instances"
+        ],
+        "type": "object"
+      },
+      "PredictResponse": {
+        "properties": {
+          "predictions": {
+            "description": "Array of generated images",
+            "items": {
+              "$ref": "#/components/schemas/ImagePrediction"
+            },
+            "nullable": true,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "SafetyRating": {
+        "properties": {
+          "category": {
+            "description": "Output only. The harm category of this rating.",
+            "type": "string"
+          },
+          "probability": {
+            "description": "Output only. The probability of harm for this category.",
+            "type": "string"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "GoogleCloudAiplatformV1SafetyRating"
+      },
+      "SafetySetting": {
+        "properties": {
+          "category": {
+            "description": "Required. The harm category to be blocked.",
+            "type": "string"
+          },
+          "threshold": {
+            "description": "Required. The threshold for blocking content. If the harm probability exceeds this threshold, the content will be blocked.",
+            "type": "string"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "GoogleCloudAiplatformV1SafetySetting"
+      },
+      "UsageMetadata": {
+        "properties": {
+          "candidatesTokenCount": {
+            "description": "The total number of tokens in the generated candidates.",
+            "type": "integer"
+          },
+          "promptTokenCount": {
+            "description": "The total number of tokens in the prompt. This includes any text, images, or other media provided in the request. When `cached_content` is set, this also includes the number of tokens in the cached content.",
+            "type": "integer"
+          },
+          "totalTokenCount": {
+            "description": "The total number of tokens for the entire request. This is the sum of `prompt_token_count`, `candidates_token_count`, `tool_use_prompt_token_count`, and `thoughts_token_count`.",
+            "type": "integer"
+          }
+        },
+        "type": "object",
+        "x-kalpa-source-schema": "GoogleCloudAiplatformV1UsageMetadata"
+      },
+      "VideoInstance": {
+        "properties": {
+          "image": {
+            "$ref": "#/components/schemas/InlineData"
+          },
+          "prompt": {
+            "description": "Text prompt for video generation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "VideoParameters": {
+        "properties": {
+          "aspectRatio": {
+            "description": "Aspect ratio (e.g., '16:9', '9:16')",
+            "nullable": true,
+            "type": "string"
+          },
+          "sampleCount": {
+            "default": 1,
+            "description": "Number of videos to generate",
+            "nullable": true,
+            "type": "integer"
+          },
+          "storageUri": {
+            "description": "GCS bucket URI for output videos (required for Veo 2.0)",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "VideoPredictRequest": {
+        "properties": {
+          "instances": {
+            "description": "Array of video generation instances",
+            "items": {
+              "$ref": "#/components/schemas/VideoInstance"
+            },
+            "type": "array"
+          },
+          "parameters": {
+            "$ref": "#/components/schemas/VideoParameters"
+          }
+        },
+        "required": [
+          "instances"
+        ],
+        "type": "object"
+      },
+      "VideoPrediction": {
+        "properties": {
+          "bytesBase64Encoded": {
+            "description": "Base64 encoded video data",
+            "format": "byte",
+            "type": "string"
+          },
+          "mimeType": {
+            "default": "video/mp4",
+            "description": "MIME type of the generated video",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "providerAuth": {
+        "scheme": "bearer",
+        "type": "http"
       }
     }
-  ],
-  "security": [
-    {
-      "bearerAuth": []
-    }
-  ],
+  },
+  "info": {
+    "description": "Generated from official source by scripts/schema-refresh.py. This is a compatibility projection, not the full upstream API. See specs/README.md for retained fields and transformations.",
+    "title": "Kalpa vertex supported-operation projection",
+    "version": "20261027"
+  },
+  "openapi": "3.0.3",
   "paths": {
-    "/v1/projects/{projectId}/locations/{location}/publishers/google/models/{modelId}:generateContent": {
-      "post": {
-        "operationId": "generateContent",
-        "summary": "Generate text, images, or videos with Gemini models",
-        "description": "Unified endpoint for all generation types. Use different models for different capabilities: gemini-2.0-flash for text, imagen-3.0-generate-001 for images, veo-2.0-generate-001 for videos",
+    "/v1/projects/{projectId}/locations/{location}/operations/{operationId}": {
+      "get": {
+        "operationId": "getOperation",
         "parameters": [
           {
-            "name": "projectId",
             "in": "path",
+            "name": "projectId",
             "required": true,
             "schema": {
               "type": "string"
-            },
-            "description": "Google Cloud project ID"
+            }
           },
           {
+            "in": "path",
             "name": "location",
-            "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "default": "us-central1"
-            },
-            "description": "Cloud region"
+              "type": "string"
+            }
           },
           {
-            "name": "modelId",
             "in": "path",
+            "name": "operationId",
             "required": true,
             "schema": {
-              "type": "string",
-              "example": "gemini-2.0-flash"
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationResponse"
+                }
+              }
             },
-            "description": "Model ID: gemini-2.0-flash, gemini-1.5-pro, imagen-3.0-generate-001, veo-2.0-generate-001"
+            "description": "Successful provider response"
+          }
+        }
+      }
+    },
+    "/v1/projects/{projectId}/locations/{location}/publishers/google/models/{modelId}:generateContent": {
+      "post": {
+        "operationId": "generateContent",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "projectId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "location",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "modelId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/GenerateRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
-            "description": "Successful response",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GenerateResponse"
                 }
               }
-            }
+            },
+            "description": "Successful provider response"
           }
         }
       }
@@ -85,59 +580,52 @@
     "/v1/projects/{projectId}/locations/{location}/publishers/google/models/{modelId}:predict": {
       "post": {
         "operationId": "predict",
-        "summary": "Predict endpoint for Imagen image generation",
-        "description": "Specialized endpoint for Imagen models. Required for imagen-3.0-generate-001, imagen-4.0-generate-001, etc.",
         "parameters": [
           {
-            "name": "projectId",
             "in": "path",
+            "name": "projectId",
             "required": true,
             "schema": {
               "type": "string"
-            },
-            "description": "Google Cloud project ID"
+            }
           },
           {
+            "in": "path",
             "name": "location",
-            "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "default": "us-central1"
-            },
-            "description": "Cloud region"
+              "type": "string"
+            }
           },
           {
-            "name": "modelId",
             "in": "path",
+            "name": "modelId",
             "required": true,
             "schema": {
-              "type": "string",
-              "example": "imagen-4.0-generate-001"
-            },
-            "description": "Model ID for Imagen: imagen-3.0-generate-001, imagen-4.0-generate-001, etc."
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/PredictRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
-            "description": "Successful response",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PredictResponse"
                 }
               }
-            }
+            },
+            "description": "Successful provider response"
           }
         }
       }
@@ -145,547 +633,72 @@
     "/v1/projects/{projectId}/locations/{location}/publishers/google/models/{modelId}:predictLongRunning": {
       "post": {
         "operationId": "predictLongRunning",
-        "summary": "Predict endpoint for long-running operations",
-        "description": "Specialized endpoint for Veo video generation models. Required for veo-2.0-generate-001, veo-3.0-generate, etc.",
         "parameters": [
           {
-            "name": "projectId",
             "in": "path",
+            "name": "projectId",
             "required": true,
             "schema": {
               "type": "string"
-            },
-            "description": "Google Cloud project ID"
+            }
           },
           {
+            "in": "path",
             "name": "location",
-            "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "default": "us-central1"
-            },
-            "description": "Cloud region"
+              "type": "string"
+            }
           },
           {
-            "name": "modelId",
             "in": "path",
+            "name": "modelId",
             "required": true,
             "schema": {
-              "type": "string",
-              "example": "veo-2.0-generate-001"
-            },
-            "description": "Model ID for Veo: veo-2.0-generate-001, veo-3.0-generate, etc."
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/VideoPredictRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
-            "description": "Long-running operation created",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/OperationResponse"
                 }
               }
-            }
-          }
-        }
-      }
-    },
-    "/v1/projects/{projectId}/locations/{location}/operations/{operationId}": {
-      "get": {
-        "operationId": "getOperation",
-        "summary": "Get long-running operation status",
-        "description": "Retrieves the status and result of a long-running operation (e.g., video generation). Use this for UUID-based operation IDs from Veo models.",
-        "parameters": [
-          {
-            "name": "projectId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
             },
-            "description": "Google Cloud project ID"
-          },
-          {
-            "name": "location",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "Cloud region"
-          },
-          {
-            "name": "operationId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "Operation ID returned from predictLongRunning"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Operation result",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OperationResponse"
-                }
-              }
-            }
+            "description": "Successful provider response"
           }
         }
       }
     }
   },
-  "components": {
-    "securitySchemes": {
-      "bearerAuth": {
-        "type": "http",
-        "scheme": "bearer",
-        "bearerFormat": "JWT"
-      }
-    },
-    "schemas": {
-      "GenerateRequest": {
-        "type": "object",
-        "required": ["contents"],
-        "properties": {
-          "contents": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Content"
-            },
-            "description": "Input prompts and content"
-          },
-          "generationConfig": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/GenerationConfig"
-              }
-            ],
-            "nullable": true
-          },
-          "safetySettings": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/SafetySetting"
-            },
-            "nullable": true
-          }
-        }
-      },
-      "Content": {
-        "type": "object",
-        "properties": {
-          "role": {
-            "type": "string",
-            "nullable": true,
-            "description": "Role of the content creator (user or model)"
-          },
-          "parts": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Part"
-            },
-            "nullable": true,
-            "description": "Content parts (text, images, videos, etc.)"
-          }
-        }
-      },
-      "Part": {
-        "type": "object",
-        "properties": {
-          "text": {
-            "type": "string",
-            "description": "Text content or prompt"
-          },
-          "inlineData": {
-            "$ref": "#/components/schemas/InlineData"
-          },
-          "fileData": {
-            "$ref": "#/components/schemas/FileData"
-          }
-        }
-      },
-      "InlineData": {
-        "type": "object",
-        "required": ["mimeType", "data"],
-        "properties": {
-          "mimeType": {
-            "type": "string",
-            "example": "image/png",
-            "description": "MIME type of the data"
-          },
-          "data": {
-            "type": "string",
-            "format": "byte",
-            "description": "Base64 encoded data"
-          }
-        }
-      },
-      "FileData": {
-        "type": "object",
-        "required": ["mimeType", "fileUri"],
-        "properties": {
-          "mimeType": {
-            "type": "string",
-            "example": "video/mp4",
-            "description": "MIME type of the file"
-          },
-          "fileUri": {
-            "type": "string",
-            "example": "gs://bucket/video.mp4",
-            "description": "Cloud Storage URI"
-          }
-        }
-      },
-      "GenerationConfig": {
-        "type": "object",
-        "properties": {
-          "temperature": {
-            "type": "number",
-            "format": "float",
-            "nullable": true,
-            "default": 1.0,
-            "minimum": 0.0,
-            "maximum": 2.0,
-            "description": "Controls randomness in generation"
-          },
-          "maxOutputTokens": {
-            "type": "integer",
-            "nullable": true,
-            "default": 2048,
-            "description": "Maximum tokens to generate"
-          },
-          "topP": {
-            "type": "number",
-            "format": "float",
-            "nullable": true,
-            "description": "Nucleus sampling parameter"
-          },
-          "topK": {
-            "type": "integer",
-            "nullable": true,
-            "description": "Top-k sampling parameter"
-          },
-          "stopSequences": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "nullable": true,
-            "description": "Sequences that stop generation"
-          },
-          "responseMimeType": {
-            "type": "string",
-            "nullable": true,
-            "example": "application/json",
-            "description": "Output format (text/plain, application/json, image/png, video/mp4)"
-          },
-          "responseModalities": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "nullable": true,
-            "description": "Output modalities to generate (e.g., ['IMAGE', 'TEXT'] for Gemini image models)"
-          }
-        }
-      },
-      "SafetySetting": {
-        "type": "object",
-        "properties": {
-          "category": {
-            "type": "string",
-            "enum": [
-              "HARM_CATEGORY_HARASSMENT",
-              "HARM_CATEGORY_HATE_SPEECH",
-              "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-              "HARM_CATEGORY_DANGEROUS_CONTENT"
-            ]
-          },
-          "threshold": {
-            "type": "string",
-            "enum": [
-              "BLOCK_NONE",
-              "BLOCK_ONLY_HIGH",
-              "BLOCK_MEDIUM_AND_ABOVE",
-              "BLOCK_LOW_AND_ABOVE"
-            ]
-          }
-        }
-      },
-      "GenerateResponse": {
-        "type": "object",
-        "properties": {
-          "candidates": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Candidate"
-            },
-            "nullable": true
-          },
-          "usageMetadata": {
-            "$ref": "#/components/schemas/UsageMetadata"
-          }
-        }
-      },
-      "Candidate": {
-        "type": "object",
-        "properties": {
-          "content": {
-            "$ref": "#/components/schemas/Content"
-          },
-          "finishReason": {
-            "type": "string",
-            "enum": ["STOP", "MAX_TOKENS", "SAFETY", "RECITATION", "OTHER"],
-            "description": "Reason why generation stopped"
-          },
-          "safetyRatings": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/SafetyRating"
-            }
-          },
-          "citationMetadata": {
-            "type": "object",
-            "properties": {
-              "citations": {
-                "type": "array",
-                "items": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      },
-      "SafetyRating": {
-        "type": "object",
-        "properties": {
-          "category": {
-            "type": "string"
-          },
-          "probability": {
-            "type": "string",
-            "enum": ["NEGLIGIBLE", "LOW", "MEDIUM", "HIGH"]
-          }
-        }
-      },
-      "UsageMetadata": {
-        "type": "object",
-        "properties": {
-          "promptTokenCount": {
-            "type": "integer",
-            "description": "Number of tokens in the prompt"
-          },
-          "candidatesTokenCount": {
-            "type": "integer",
-            "description": "Number of tokens in all candidates"
-          },
-          "totalTokenCount": {
-            "type": "integer",
-            "description": "Total token count"
-          }
-        }
-      },
-      "PredictRequest": {
-        "type": "object",
-        "required": ["instances"],
-        "properties": {
-          "instances": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ImageInstance"
-            },
-            "description": "Array of instances with prompts"
-          },
-          "parameters": {
-            "$ref": "#/components/schemas/ImageParameters"
-          }
-        }
-      },
-      "ImageInstance": {
-        "type": "object",
-        "required": ["prompt"],
-        "properties": {
-          "prompt": {
-            "type": "string",
-            "description": "Text prompt for image generation"
-          }
-        }
-      },
-      "ImageParameters": {
-        "type": "object",
-        "properties": {
-          "sampleCount": {
-            "type": "integer",
-            "nullable": true,
-            "default": 1,
-            "minimum": 1,
-            "maximum": 4,
-            "description": "Number of images to generate"
-          },
-          "aspectRatio": {
-            "type": "string",
-            "nullable": true,
-            "description": "Aspect ratio (e.g., '1:1', '16:9', '9:16')"
-          },
-          "negativePrompt": {
-            "type": "string",
-            "nullable": true,
-            "description": "Negative prompt to avoid certain elements"
-          }
-        }
-      },
-      "PredictResponse": {
-        "type": "object",
-        "properties": {
-          "predictions": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ImagePrediction"
-            },
-            "nullable": true,
-            "description": "Array of generated images"
-          }
-        }
-      },
-      "ImagePrediction": {
-        "type": "object",
-        "properties": {
-          "bytesBase64Encoded": {
-            "type": "string",
-            "format": "byte",
-            "description": "Base64 encoded image data"
-          },
-          "mimeType": {
-            "type": "string",
-            "default": "image/png",
-            "description": "MIME type of the generated image"
-          }
-        }
-      },
-      "OperationResponse": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "nullable": true,
-            "description": "Operation name/ID"
-          },
-          "done": {
-            "type": "boolean",
-            "nullable": true,
-            "description": "Whether the operation is complete"
-          },
-          "error": {
-            "$ref": "#/components/schemas/OperationError"
-          },
-          "response": {
-            "$ref": "#/components/schemas/PredictResponse"
-          },
-          "metadata": {
-            "type": "object",
-            "nullable": true,
-            "description": "Operation metadata"
-          }
-        }
-      },
-      "OperationError": {
-        "type": "object",
-        "properties": {
-          "code": {
-            "type": "integer",
-            "nullable": true,
-            "description": "Error code"
-          },
-          "message": {
-            "type": "string",
-            "nullable": true,
-            "description": "Error message"
-          }
-        }
-      },
-      "VideoPredictRequest": {
-        "type": "object",
-        "required": ["instances"],
-        "properties": {
-          "instances": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/VideoInstance"
-            },
-            "description": "Array of video generation instances"
-          },
-          "parameters": {
-            "$ref": "#/components/schemas/VideoParameters"
-          }
-        }
-      },
-      "VideoInstance": {
-        "type": "object",
-        "required": ["prompt"],
-        "properties": {
-          "prompt": {
-            "type": "string",
-            "description": "Text prompt for video generation"
-          },
-          "image": {
-            "$ref": "#/components/schemas/InlineData"
-          }
-        }
-      },
-      "VideoParameters": {
-        "type": "object",
-        "properties": {
-          "sampleCount": {
-            "type": "integer",
-            "nullable": true,
-            "default": 1,
-            "description": "Number of videos to generate"
-          },
-          "aspectRatio": {
-            "type": "string",
-            "nullable": true,
-            "description": "Aspect ratio (e.g., '16:9', '9:16')"
-          },
-          "storageUri": {
-            "type": "string",
-            "nullable": true,
-            "description": "GCS bucket URI for output videos (required for Veo 2.0)"
-          }
-        }
-      },
-      "VideoPrediction": {
-        "type": "object",
-        "properties": {
-          "bytesBase64Encoded": {
-            "type": "string",
-            "format": "byte",
-            "description": "Base64 encoded video data"
-          },
-          "mimeType": {
-            "type": "string",
-            "default": "video/mp4",
-            "description": "MIME type of the generated video"
-          }
-        }
-      }
+  "security": [
+    {
+      "providerAuth": []
     }
+  ],
+  "servers": [
+    {
+      "url": "https://aiplatform.googleapis.com"
+    }
+  ],
+  "x-kalpa-upstream": {
+    "bytes": 4053137,
+    "fetched_at": "2026-11-04",
+    "revision": "20261027",
+    "sha256": "9c529eab5cc468a3fe81090b99caab9559db89d117f78115e4674c65503dc04c",
+    "url": "https://aiplatform.googleapis.com/$discovery/rest?version=v1"
   }
 }

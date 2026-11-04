@@ -1,0 +1,30 @@
+{
+  "openai": {
+    "url": "https://raw.githubusercontent.com/openai/openai-openapi/b4cad10d7cff7fc286f2dbf1992569989522c6f0/openapi.json",
+    "sha256": "24fe4259875361cb38bc552fc2355758649edbe68191f31338153d129e718ad3",
+    "fetched_at": "2026-11-04",
+    "revision": "b4cad10d7cff7fc286f2dbf1992569989522c6f0",
+    "bytes": 5112409
+  },
+  "gemini": {
+    "url": "https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta",
+    "sha256": "545bf565ec01c9ad55db22ba2179228e047e00b9186828da844d0736adc0364d",
+    "fetched_at": "2026-11-04",
+    "revision": "20261103",
+    "bytes": 387956
+  },
+  "vertex": {
+    "url": "https://aiplatform.googleapis.com/$discovery/rest?version=v1",
+    "sha256": "9c529eab5cc468a3fe81090b99caab9559db89d117f78115e4674c65503dc04c",
+    "fetched_at": "2026-11-04",
+    "revision": "20261027",
+    "bytes": 4053137
+  },
+  "falai": {
+    "url": "https://fal.ai/docs/api-reference/inference-api/openapi/queue.json",
+    "sha256": "92ba49b53e13423fb06d507126c0cd70e872818833c2b6df98e56223c083ee97",
+    "fetched_at": "2026-11-04",
+    "revision": "v1",
+    "bytes": 41280
+  }
+}

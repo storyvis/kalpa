@@ -18,14 +18,14 @@ pub fn slurm_client(base_url: &str, user: &str, token: &str) -> slurm::Client {
     let mut headers = HeaderMap::new();
     headers.insert(
         "X-SLURM-USER-NAME",
-        HeaderValue::from_str(user).expect("invalid X-SLURM-USER-NAME header value"),
+        HeaderValue::from_str(user).unwrap_or_else(|_| HeaderValue::from_static("")),
     );
-    headers.insert(
-        "X-SLURM-USER-TOKEN",
-        HeaderValue::from_str(token).expect("invalid X-SLURM-USER-TOKEN header value"),
-    );
+    headers.insert("X-SLURM-USER-TOKEN", sensitive(token));
 
     let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
         .default_headers(headers)
         .build()
         .expect("failed to build reqwest client");
@@ -40,16 +40,21 @@ pub fn slurm_client(base_url: &str, user: &str, token: &str) -> slurm::Client {
 /// * `bearer` — JWT / bearer token (without the `Bearer ` prefix)
 pub fn slurm_client_bearer(base_url: &str, bearer: &str) -> slurm::Client {
     let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {}", bearer))
-            .expect("invalid Authorization header value"),
-    );
+    headers.insert(AUTHORIZATION, sensitive(&format!("Bearer {}", bearer)));
 
     let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
         .default_headers(headers)
         .build()
         .expect("failed to build reqwest client");
 
     slurm::Client::new_with_client(base_url, http)
+}
+
+fn sensitive(value: &str) -> HeaderValue {
+    let mut header = HeaderValue::from_str(value).unwrap_or_else(|_| HeaderValue::from_static(""));
+    header.set_sensitive(true);
+    header
 }
