@@ -15,7 +15,7 @@ changes were used for validation.
   downloaded transcription input is limited to 25 MiB. Oversized responses fail
   without buffering the entire stream. Generated-code transformations assert their
   expected boundaries so generator drift fails the build.
-- Error bodies are not reflected into errors/logs. Generated errors preserve HTTP
+- Error bodies and malformed-response enum values are not reflected into errors/logs. Generated errors preserve HTTP
   status, including 429. HTTP errors remove URLs. Credentials use sensitive header
   values; Gemini sends its key in `x-goog-api-key`, not the query string. Debug output
   for configuration, service accounts and OAuth tokens redacts secrets.
@@ -72,7 +72,7 @@ upstream specification.
 
 - Six focused baseline tests failed before fixes: invalid limiter min/max and zero
   floor, retry zero attempts/invalid multiplier, Unicode job ID and path traversal.
-- `cargo test --workspace --locked`: 57 passing tests (43 core, five catalog integration tests, five generated wire
+- `cargo test --workspace --locked`: 58 passing tests (44 core, five catalog integration tests, five generated wire
   contracts, four loopback generated HTTP tests), plus the pre-existing ignored
   retry documentation example. A separately invoked ignored microbenchmark checks
   the connection-reuse improvement: 100 loopback requests opened 100 connections

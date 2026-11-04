@@ -287,9 +287,9 @@ impl FalAIProvider {
             })?;
 
         let status: FalQueueStatus =
-            serde_json::from_value(status_json).map_err(|e| KalpaError::ProviderError {
+            serde_json::from_value(status_json).map_err(|_| KalpaError::ProviderError {
                 status: 500u16,
-                message: format!("Failed to parse status response: {}", e),
+                message: "Invalid Fal queue status response".into(),
             })?;
 
         Ok(status)
@@ -452,10 +452,10 @@ impl FalAIProvider {
                     // Fetch the actual result using direct GET to the response_url
                     let result_json = self.queue_result_by_url(&response_url).await?;
 
-                    return serde_json::from_value(result_json).map_err(|e| {
+                    return serde_json::from_value(result_json).map_err(|_| {
                         KalpaError::ProviderError {
                             status: 500u16,
-                            message: format!("Failed to parse result: {}", e),
+                            message: "Invalid Fal result response".into(),
                         }
                     });
                 }

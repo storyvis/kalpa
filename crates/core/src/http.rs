@@ -36,9 +36,11 @@ pub async fn read_bounded(response: reqwest::Response, cap: usize) -> KalpaResul
 }
 
 pub async fn read_json<T: DeserializeOwned>(response: reqwest::Response) -> KalpaResult<T> {
-    Ok(serde_json::from_slice(
-        &read_bounded(response, MAX_RESPONSE_BYTES).await?,
-    )?)
+    let bytes = read_bounded(response, MAX_RESPONSE_BYTES).await?;
+    serde_json::from_slice(&bytes).map_err(|_| KalpaError::ProviderError {
+        status: 502,
+        message: "Provider returned an invalid response".into(),
+    })
 }
 
 /// Preserve status, without reflecting untrusted error bodies (which can echo keys).
@@ -96,6 +98,20 @@ mod tests {
         let error = check_response(response, "test").await.unwrap_err();
         assert!(matches!(error, KalpaError::RateLimited(_)));
         assert!(!error.to_string().contains("secret"));
+    }
+    #[tokio::test]
+    async fn malformed_success_response_does_not_echo_enum_values() {
+        #[derive(serde::Deserialize, Debug)]
+        enum Status {
+            Pending,
+        }
+        let response = reqwest::Response::from(http::Response::new("\"synthetic-secret-key\""));
+        let error = read_json::<Status>(response).await.unwrap_err();
+        assert!(matches!(
+            error,
+            KalpaError::ProviderError { status: 502, .. }
+        ));
+        assert!(!error.to_string().contains("synthetic-secret-key"));
     }
     #[test]
     fn credentials_are_redacted_and_invalid_keys_do_not_panic() {
