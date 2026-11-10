@@ -21,8 +21,10 @@ pub struct ModelInfo {
     pub slug: String,
     /// Human-readable name.
     pub display_name: String,
-    /// svid generation tags (72-86) this model can serve.
-    pub supported_gen_types: Vec<u8>,
+    /// svid generation tags this model can serve: the block 256-511, tag =
+    /// 256 + 16 × input + output modality (0 text, 1 image, 2 video, 3 speech,
+    /// 4 embedding; 5-15 for new ones).
+    pub supported_gen_types: Vec<u16>,
     /// Modalities accepted as input.
     pub input_modalities: Vec<Modality>,
     /// Modalities this model can emit (may be several).
@@ -93,7 +95,7 @@ impl Registry {
             ModelInfo {
                 slug: "flux-dev".into(),
                 display_name: "FLUX.1 [dev]".into(),
-                supported_gen_types: vec![73], // t2i
+                supported_gen_types: vec![257], // t2i
                 input_modalities: vec![Modality::Text],
                 output_modalities: vec![Modality::Image],
                 bindings: vec![fal("fal-ai/flux/dev")],
@@ -102,7 +104,7 @@ impl Registry {
             ModelInfo {
                 slug: "gemini-3-pro-image".into(),
                 display_name: "Gemini 3 Pro Image (Nano Banana Pro)".into(),
-                supported_gen_types: vec![73, 72, 78], // t2i, t2t, i2i
+                supported_gen_types: vec![257, 256, 273], // t2i, t2t, i2i
                 input_modalities: vec![Modality::Text, Modality::Image],
                 output_modalities: vec![Modality::Image, Modality::Text],
                 bindings: vec![gemini("gemini-3-pro-image-preview")],
@@ -112,7 +114,7 @@ impl Registry {
             ModelInfo {
                 slug: "gemini-3.1-flash-image".into(),
                 display_name: "Gemini 3.1 Flash Image (Nano Banana 2)".into(),
-                supported_gen_types: vec![73, 72, 78], // t2i, t2t, i2i
+                supported_gen_types: vec![257, 256, 273], // t2i, t2t, i2i
                 input_modalities: vec![Modality::Text, Modality::Image],
                 output_modalities: vec![Modality::Image, Modality::Text],
                 bindings: vec![vertex("gemini-3.1-flash-image")],
@@ -120,7 +122,7 @@ impl Registry {
             ModelInfo {
                 slug: "gemini-2.5-flash".into(),
                 display_name: "Gemini 2.5 Flash".into(),
-                supported_gen_types: vec![72], // t2t
+                supported_gen_types: vec![256], // t2t
                 input_modalities: vec![Modality::Text, Modality::Image],
                 output_modalities: vec![Modality::Text],
                 bindings: vec![gemini("gemini-2.5-flash")],
@@ -129,7 +131,7 @@ impl Registry {
             ModelInfo {
                 slug: "imagen-4".into(),
                 display_name: "Imagen 4".into(),
-                supported_gen_types: vec![73], // t2i
+                supported_gen_types: vec![257], // t2i
                 input_modalities: vec![Modality::Text],
                 output_modalities: vec![Modality::Image],
                 bindings: vec![vertex("imagen-4.0-generate-001")],
@@ -138,7 +140,7 @@ impl Registry {
             ModelInfo {
                 slug: "dall-e-3".into(),
                 display_name: "DALL·E 3".into(),
-                supported_gen_types: vec![73], // t2i
+                supported_gen_types: vec![257], // t2i
                 input_modalities: vec![Modality::Text],
                 output_modalities: vec![Modality::Image],
                 bindings: vec![Binding {
@@ -153,7 +155,7 @@ impl Registry {
             ModelInfo {
                 slug: "gpt-4.1".into(),
                 display_name: "GPT-4.1".into(),
-                supported_gen_types: vec![72], // t2t
+                supported_gen_types: vec![256], // t2t
                 input_modalities: vec![Modality::Text, Modality::Image],
                 output_modalities: vec![Modality::Text],
                 bindings: vec![Binding {
@@ -168,7 +170,7 @@ impl Registry {
             ModelInfo {
                 slug: "claude-sonnet".into(),
                 display_name: "Claude Sonnet 4.6".into(),
-                supported_gen_types: vec![72], // t2t
+                supported_gen_types: vec![256], // t2t
                 input_modalities: vec![Modality::Text, Modality::Image],
                 output_modalities: vec![Modality::Text],
                 bindings: vec![Binding {
@@ -183,7 +185,7 @@ impl Registry {
             ModelInfo {
                 slug: "minimax-video".into(),
                 display_name: "MiniMax Video 01".into(),
-                supported_gen_types: vec![74, 79], // t2v, i2v
+                supported_gen_types: vec![258, 274], // t2v, i2v
                 input_modalities: vec![Modality::Text, Modality::Image],
                 output_modalities: vec![Modality::Video],
                 bindings: vec![fal("fal-ai/minimax/video-01")],
@@ -192,7 +194,7 @@ impl Registry {
             ModelInfo {
                 slug: "tts-1".into(),
                 display_name: "OpenAI TTS".into(),
-                supported_gen_types: vec![75], // t2s
+                supported_gen_types: vec![259], // t2s
                 input_modalities: vec![Modality::Text],
                 output_modalities: vec![Modality::Audio],
                 bindings: vec![Binding {
@@ -207,7 +209,7 @@ impl Registry {
             ModelInfo {
                 slug: "whisper-1".into(),
                 display_name: "OpenAI Whisper".into(),
-                supported_gen_types: vec![84], // s2t
+                supported_gen_types: vec![304], // s2t
                 input_modalities: vec![Modality::Audio],
                 output_modalities: vec![Modality::Text],
                 bindings: vec![Binding {
