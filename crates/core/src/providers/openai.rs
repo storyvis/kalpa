@@ -88,18 +88,48 @@ impl OpenAIProvider {
 
     /// `POST /images/generations`, as parts. `params` may hold any of
     /// [`IMAGE_PARAMS`]; others are not sent.
+    /// With `inputs` (image bytes and their MIME types) it is an edit:
+    /// `POST /images/edits` as a form, the images as `image[]` files.
     async fn create_images(
         &self,
         model: &str,
         prompt: &str,
         params: Option<&Value>,
+        inputs: Vec<(Vec<u8>, String)>,
     ) -> KalpaResult<Vec<Part>> {
-        let resp = self
-            .http
-            .post(self.url("images/generations"))
-            .json(&image_body(model, prompt, params))
-            .send()
-            .await?;
+        let body = image_body(model, prompt, params);
+        let resp = if inputs.is_empty() {
+            self.http
+                .post(self.url("images/generations"))
+                .json(&body)
+                .send()
+                .await?
+        } else {
+            let mut form = reqwest::multipart::Form::new();
+            for (k, v) in body.as_object().into_iter().flatten() {
+                let text = v
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| v.to_string());
+                form = form.text(k.clone(), text);
+            }
+            for (i, (bytes, mime)) in inputs.into_iter().enumerate() {
+                let ext = mime.rsplit('/').next().unwrap_or("png").to_string();
+                let part = reqwest::multipart::Part::bytes(bytes)
+                    .file_name(format!("image-{i}.{ext}"))
+                    .mime_str(&mime)
+                    .map_err(|_| KalpaError::ProviderError {
+                        status: 400,
+                        message: format!("openai: unsupported image type {mime}"),
+                    })?;
+                form = form.part("image[]", part);
+            }
+            self.http
+                .post(self.url("images/edits"))
+                .multipart(form)
+                .send()
+                .await?
+        };
         let parsed: ImagesResponse =
             crate::http::read_json(check_response(resp, "openai").await?).await?;
         let mime = image_mime(params);
@@ -291,7 +321,7 @@ impl ImageGenerationProvider for OpenAIProvider {
     ) -> KalpaResult<ImageGenerationResponse> {
         let params = serde_json::json!({ "n": request.n.unwrap_or(1), "size": request.size });
         let images: Vec<GeneratedImage> = self
-            .create_images(&request.model, &request.prompt, Some(&params))
+            .create_images(&request.model, &request.prompt, Some(&params), Vec::new())
             .await?
             .into_iter()
             .filter_map(|part| match part {
@@ -322,13 +352,12 @@ impl GenerationProvider for OpenAIProvider {
         let model = request.model.split().1.to_string();
         let prompt = request.text_prompt()?;
         let kind = media_kind(&model);
-        if kind != MediaKind::Text
-            && request
-                .parts
-                .iter()
-                .any(|p| matches!(p, Part::Image { .. }))
-        {
-            // Refused rather than dropped: edits and image-to-video are not wired.
+        let has_image = request
+            .parts
+            .iter()
+            .any(|p| matches!(p, Part::Image { .. }));
+        if kind == MediaKind::Video && has_image {
+            // Refused rather than dropped: image-to-video is not wired for Sora.
             return Err(KalpaError::ProviderError {
                 status: 400,
                 message: format!("openai: an input image is not supported for {model}"),
@@ -337,7 +366,12 @@ impl GenerationProvider for OpenAIProvider {
 
         if kind == MediaKind::Image {
             let parts = self
-                .create_images(&model, &prompt, request.params.as_ref())
+                .create_images(
+                    &model,
+                    &prompt,
+                    request.params.as_ref(),
+                    edit_inputs(request)?,
+                )
                 .await?;
             Ok(SubmitOutcome::Sync(GenerationResponse {
                 model,
@@ -407,6 +441,33 @@ impl GenerationProvider for OpenAIProvider {
             .await?;
         check_response(resp, "openai").await.map(|_| ())
     }
+}
+
+/// The images an edit sends, as bytes. OpenAI's edits take uploads only, so
+/// an image by URL is refused: the caller fetches it (it holds the SSRF policy).
+fn edit_inputs(request: &GenerationRequest) -> KalpaResult<Vec<(Vec<u8>, String)>> {
+    use base64::Engine;
+    let refuse = |message: &str| KalpaError::ProviderError {
+        status: 400,
+        message: format!("openai: {message}"),
+    };
+    request
+        .parts
+        .iter()
+        .filter_map(|p| match p {
+            Part::Image { b64_data, mime, .. } => Some((b64_data, mime)),
+            _ => None,
+        })
+        .map(|(b64, mime)| {
+            let b64 = b64
+                .as_deref()
+                .ok_or_else(|| refuse("an image to edit must be sent as bytes, not a URL"))?;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .map_err(|_| refuse("an image to edit is not valid base64"))?;
+            Ok((bytes, mime.clone().unwrap_or_else(|| "image/png".into())))
+        })
+        .collect()
 }
 
 #[derive(Debug, PartialEq)]
@@ -731,13 +792,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_input_image_is_refused_not_dropped() {
+    async fn an_image_by_url_or_for_sora_is_refused_not_dropped() {
         let server = MockServer::start().await;
-        let mut req = request("gpt-image-1.5", json!({}));
-        req.parts.push(Part::image_url("https://example.com/a.png"));
+        for model in ["gpt-image-1.5", "sora-2"] {
+            let mut req = request(model, json!({}));
+            req.parts.push(Part::image_url("https://example.com/a.png"));
+            assert!(
+                matches!(
+                    provider(&server).submit(&req).await,
+                    Err(KalpaError::ProviderError { status: 400, .. })
+                ),
+                "{model}"
+            );
+        }
+    }
+
+    /// An input image makes it an edit: a form to `/images/edits` with the
+    /// bytes as `image[]` and the prompt beside them.
+    #[tokio::test]
+    async fn an_image_with_bytes_is_edited() {
+        use wiremock::matchers::body_string_contains;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/images/edits"))
+            .and(header("authorization", "Bearer test-key"))
+            .and(body_string_contains(
+                "name=\"image[]\"; filename=\"image-0.png\"",
+            ))
+            .and(body_string_contains("PNGDATA"))
+            .and(body_string_contains("make it night"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"data": [{"b64_json": "RURJVA=="}]})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut req = request("gpt-image-1.5", json!({"size": "1024x1024"}));
+        req.parts = vec![
+            Part::text("make it night"),
+            Part::Image {
+                url: None,
+                b64_data: Some("UE5HREFUQQ==".into()),
+                mime: Some("image/png".into()),
+            },
+        ];
+        let SubmitOutcome::Sync(done) = provider(&server).submit(&req).await.unwrap() else {
+            panic!("async")
+        };
         assert!(matches!(
-            provider(&server).submit(&req).await,
-            Err(KalpaError::ProviderError { status: 400, .. })
+            done.parts.as_slice(),
+            [Part::Image { b64_data: Some(b), .. }] if b == "RURJVA=="
         ));
     }
 

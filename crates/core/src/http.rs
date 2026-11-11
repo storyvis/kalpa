@@ -85,25 +85,56 @@ async fn read_error_body(mut resp: reqwest::Response) -> Vec<u8> {
     body
 }
 
-/// `error.message` (with a string `error.code`) from a JSON error body, the
-/// shape OpenAI, Anthropic and Google answer with. Anything else is `None`.
+/// The reason in a JSON error body: `error.message` (with a string
+/// `error.code`), the shape OpenAI, Anthropic and Google answer with, or
+/// fal's `detail` (a string, or validation errors' `loc` and `msg`).
+/// Anything else is `None`.
 pub(crate) fn error_message(body: &[u8]) -> Option<String> {
     #[derive(serde::Deserialize)]
     struct Body {
-        error: Inner,
+        error: Option<Inner>,
+        detail: Option<serde_json::Value>,
     }
     #[derive(serde::Deserialize)]
     struct Inner {
         message: Option<String>,
         code: Option<serde_json::Value>,
     }
-    let Body { error } = serde_json::from_slice(body).ok()?;
+    let body: Body = serde_json::from_slice(body).ok()?;
+    let Some(error) = body.error else {
+        return body.detail.as_ref().and_then(fal_detail).map(|m| scrub(&m));
+    };
     let message = error.message.filter(|m| !m.trim().is_empty())?;
     let message = match error.code.as_ref().and_then(|c| c.as_str()) {
         Some(code) if !code.is_empty() => format!("{message} ({code})"),
         _ => message,
     };
     Some(scrub(&message))
+}
+
+/// fal's `detail`: `"text"`, or `[{"loc": ["body", "image_size"], "msg": "…"}]`.
+fn fal_detail(detail: &serde_json::Value) -> Option<String> {
+    if let Some(text) = detail.as_str().filter(|t| !t.trim().is_empty()) {
+        return Some(text.to_string());
+    }
+    let items: Vec<String> = detail
+        .as_array()?
+        .iter()
+        .filter_map(|item| {
+            let msg = item.get("msg")?.as_str()?;
+            let field = item
+                .get("loc")
+                .and_then(|l| l.as_array())
+                .and_then(|l| l.last())
+                .and_then(|f| f.as_str());
+            Some(match field {
+                Some(f) => format!("{f}: {msg}"),
+                None => msg.to_string(),
+            })
+        })
+        .take(3)
+        .collect();
+    (!items.is_empty()).then(|| items.join("; "))
 }
 
 /// A provider message made safe to pass on: words that look like a key or a
@@ -198,6 +229,14 @@ mod tests {
             MAX_MESSAGE_CHARS + 1
         );
         assert_eq!(error_message(b"<html>502</html>"), None);
+        assert_eq!(
+            error_message(br#"{"detail":[{"loc":["body","image_size"],"msg":"value is not a valid enumeration member","type":"type_error.enum"}]}"#).as_deref(),
+            Some("image_size: value is not a valid enumeration member")
+        );
+        assert_eq!(
+            error_message(br#"{"detail":"Not found"}"#).as_deref(),
+            Some("Not found")
+        );
     }
     #[tokio::test]
     async fn malformed_success_response_does_not_echo_enum_values() {
