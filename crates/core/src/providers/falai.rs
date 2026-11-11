@@ -119,6 +119,21 @@ fn fal_image_size(size: &str) -> serde_json::Value {
     }
 }
 
+/// fal's image-to-video endpoint for a video model, by its naming
+/// convention: `…/text-to-video` becomes `…/image-to-video`, and a bare
+/// model (`fal-ai/minimax/video-01`) gains `/image-to-video`. An endpoint
+/// already taking an image is kept. A model with no such sibling is refused
+/// by fal (404, with its reason), never silently run without the image.
+fn image_to_video_endpoint(model_id: &str) -> String {
+    if model_id.contains("image-to-video") {
+        model_id.to_string()
+    } else if let Some(base) = model_id.strip_suffix("text-to-video") {
+        format!("{base}image-to-video")
+    } else {
+        format!("{}/image-to-video", model_id.trim_end_matches('/'))
+    }
+}
+
 /// The request's input image as fal takes it: its URL, or inline bytes as a
 /// `data:` URI (fal accepts both). `params.image_url` is the fallback.
 fn input_image(request: &GenerationRequest) -> Option<String> {
@@ -727,7 +742,13 @@ impl GenerationProvider for FalAIProvider {
         // image (URL or inline) selects image-to-video, or for an image model
         // is the image an edit works from.
         let image_url = input_image(request);
+        let mut model_id = model_id;
         let body = if model_id.contains("video") {
+            if image_url.is_some() {
+                // A text-to-video endpoint ignores `image_url`: start from the
+                // image on the model's image-to-video sibling.
+                model_id = image_to_video_endpoint(&model_id);
+            }
             match image_url {
                 Some(image_url) => serde_json::to_value(FalAIImageToVideoRequest {
                     image_url,
@@ -880,6 +901,22 @@ mod security_tests {
             assert!(validate_model_path(model).is_err());
         }
         assert!(validate_model_path("fal-ai/kling-video/v1.5/standard/text-to-video").is_ok());
+    }
+
+    #[test]
+    fn an_image_selects_the_image_to_video_sibling() {
+        assert_eq!(
+            image_to_video_endpoint("fal-ai/minimax/video-01"),
+            "fal-ai/minimax/video-01/image-to-video"
+        );
+        assert_eq!(
+            image_to_video_endpoint("fal-ai/kling-video/v1.5/standard/text-to-video"),
+            "fal-ai/kling-video/v1.5/standard/image-to-video"
+        );
+        assert_eq!(
+            image_to_video_endpoint("fal-ai/minimax/video-01/image-to-video"),
+            "fal-ai/minimax/video-01/image-to-video"
+        );
     }
 
     #[test]
