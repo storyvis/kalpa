@@ -15,7 +15,7 @@ changes were used for validation.
   downloaded transcription input is limited to 25 MiB. Oversized responses fail
   without buffering the entire stream. Generated-code transformations assert their
   expected boundaries so generator drift fails the build.
-- Error bodies and malformed-response enum values are not reflected into errors/logs. Generated errors preserve HTTP
+- Error bodies and malformed-response enum values are not reflected into errors/logs. The one exception is `check_response`, which keeps a JSON error body's `error.message` (and a string `error.code`), or fal's `detail` (its text, or up to three validation `loc: msg` entries): it is scrubbed (words that look like keys or bearer tokens are replaced), whitespace-collapsed and capped at 300 characters, and only 16 KiB of the body is read. Generated errors preserve HTTP
   status, including 429. HTTP errors remove URLs. Credentials use sensitive header
   values; Gemini sends its key in `x-goog-api-key`, not the query string. Debug output
   for configuration, service accounts and OAuth tokens redacts secrets.

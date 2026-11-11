@@ -97,10 +97,69 @@ pub struct FalAIProvider {
 #[derive(Debug, Serialize)]
 struct FalAITextToImageRequest {
     prompt: String,
+    /// A fal preset (`square_hd`, `landscape_16_9`, …) or `{width, height}`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    image_size: Option<String>,
+    image_size: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     num_images: Option<i32>,
+    /// The image an edit model (image-to-image, Kontext, …) works from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_url: Option<String>,
+}
+
+/// fal's `image_size`: an OpenAI-style `WxH` becomes `{width, height}`;
+/// anything else is passed as a preset name.
+fn fal_image_size(size: &str) -> serde_json::Value {
+    let parsed = size
+        .split_once(['x', 'X'])
+        .and_then(|(w, h)| Some((w.trim().parse::<u32>().ok()?, h.trim().parse::<u32>().ok()?)));
+    match parsed {
+        Some((width, height)) => serde_json::json!({ "width": width, "height": height }),
+        None => serde_json::Value::String(size.to_string()),
+    }
+}
+
+/// fal's image-to-video endpoint for a video model, by its naming
+/// convention: `…/text-to-video` becomes `…/image-to-video`, and a bare
+/// model (`fal-ai/minimax/video-01`) gains `/image-to-video`. An endpoint
+/// already taking an image is kept. A model with no such sibling is refused
+/// by fal (404, with its reason), never silently run without the image.
+fn image_to_video_endpoint(model_id: &str) -> String {
+    if model_id.contains("image-to-video") {
+        model_id.to_string()
+    } else if let Some(base) = model_id.strip_suffix("text-to-video") {
+        format!("{base}image-to-video")
+    } else {
+        format!("{}/image-to-video", model_id.trim_end_matches('/'))
+    }
+}
+
+/// The request's input image as fal takes it: its URL, or inline bytes as a
+/// `data:` URI (fal accepts both). `params.image_url` is the fallback.
+fn input_image(request: &GenerationRequest) -> Option<String> {
+    request
+        .parts
+        .iter()
+        .find_map(|p| match p {
+            Part::Image { url: Some(u), .. } => Some(u.clone()),
+            Part::Image {
+                b64_data: Some(b64),
+                mime,
+                ..
+            } => Some(format!(
+                "data:{};base64,{b64}",
+                mime.as_deref().unwrap_or("image/png")
+            )),
+            _ => None,
+        })
+        .or_else(|| {
+            request
+                .params
+                .as_ref()
+                .and_then(|p| p.get("image_url"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
 }
 
 #[derive(Debug, Serialize)]
@@ -364,9 +423,13 @@ impl FalAIProvider {
 
     /// Get the result of a completed queue request using the canonical response URL.
     /// Parses the URL to extract model_id and request_id, then delegates to queue_result.
+    /// Fetched directly (not through the generated client) so a failed
+    /// result, such as a 422 for invalid input, keeps fal's reason.
     pub async fn queue_result_by_url(&self, response_url: &str) -> KalpaResult<serde_json::Value> {
-        let (model_id, request_id) = Self::parse_response_url(response_url)?;
-        self.queue_result(&model_id, &request_id).await
+        Self::parse_response_url(response_url)?;
+        let url = Self::trusted_queue_url(response_url)?;
+        let response = self.http_client.get(url).send().await?;
+        crate::http::read_json(crate::http::check_response(response, "fal").await?).await
     }
 
     /// Build and serialize a video request body for queue submission.
@@ -506,8 +569,9 @@ impl ImageGenerationProvider for FalAIProvider {
     ) -> KalpaResult<ImageGenerationResponse> {
         let fal_request = FalAITextToImageRequest {
             prompt: request.prompt.clone(),
-            image_size: request.size.clone(),
+            image_size: request.size.as_deref().map(fal_image_size),
             num_images: Some(1),
+            image_url: None,
         };
 
         // Use queue-based API for all image generations
@@ -675,23 +739,16 @@ impl GenerationProvider for FalAIProvider {
             .map(|d| d as i32);
 
         // Branch on modality: video models take a video request body; an input
-        // image part (or params.image_url) selects image-to-video.
+        // image (URL or inline) selects image-to-video, or for an image model
+        // is the image an edit works from.
+        let image_url = input_image(request);
+        let mut model_id = model_id;
         let body = if model_id.contains("video") {
-            let image_url = request
-                .parts
-                .iter()
-                .find_map(|p| match p {
-                    Part::Image { url: Some(u), .. } => Some(u.clone()),
-                    _ => None,
-                })
-                .or_else(|| {
-                    request
-                        .params
-                        .as_ref()
-                        .and_then(|p| p.get("image_url"))
-                        .and_then(|v| v.as_str())
-                        .map(String::from)
-                });
+            if image_url.is_some() {
+                // A text-to-video endpoint ignores `image_url`: start from the
+                // image on the model's image-to-video sibling.
+                model_id = image_to_video_endpoint(&model_id);
+            }
             match image_url {
                 Some(image_url) => serde_json::to_value(FalAIImageToVideoRequest {
                     image_url,
@@ -706,11 +763,13 @@ impl GenerationProvider for FalAIProvider {
                 .as_ref()
                 .and_then(|p| p.get("size"))
                 .and_then(|v| v.as_str())
-                .map(String::from);
+                .filter(|s| !s.is_empty())
+                .map(fal_image_size);
             serde_json::to_value(FalAITextToImageRequest {
                 prompt,
                 image_size,
                 num_images: Some(1),
+                image_url,
             })?
         };
 
@@ -842,5 +901,53 @@ mod security_tests {
             assert!(validate_model_path(model).is_err());
         }
         assert!(validate_model_path("fal-ai/kling-video/v1.5/standard/text-to-video").is_ok());
+    }
+
+    #[test]
+    fn an_image_selects_the_image_to_video_sibling() {
+        assert_eq!(
+            image_to_video_endpoint("fal-ai/minimax/video-01"),
+            "fal-ai/minimax/video-01/image-to-video"
+        );
+        assert_eq!(
+            image_to_video_endpoint("fal-ai/kling-video/v1.5/standard/text-to-video"),
+            "fal-ai/kling-video/v1.5/standard/image-to-video"
+        );
+        assert_eq!(
+            image_to_video_endpoint("fal-ai/minimax/video-01/image-to-video"),
+            "fal-ai/minimax/video-01/image-to-video"
+        );
+    }
+
+    #[test]
+    fn openai_sizes_become_fal_dimensions_and_presets_pass() {
+        assert_eq!(
+            fal_image_size("1024x768"),
+            serde_json::json!({"width": 1024, "height": 768})
+        );
+        assert_eq!(fal_image_size("square_hd"), serde_json::json!("square_hd"));
+    }
+
+    #[test]
+    fn an_inline_input_image_is_sent_as_a_data_uri_not_dropped() {
+        let mut request = GenerationRequest::prompt("fal-ai/minimax/video-01", "go");
+        request.parts.push(Part::Image {
+            url: None,
+            b64_data: Some("AAAA".into()),
+            mime: Some("image/jpeg".into()),
+        });
+        assert_eq!(
+            input_image(&request).as_deref(),
+            Some("data:image/jpeg;base64,AAAA")
+        );
+        let mut by_url = GenerationRequest::prompt("m", "go");
+        by_url
+            .parts
+            .push(Part::image_url("https://example.com/a.png"));
+        assert_eq!(
+            input_image(&by_url).as_deref(),
+            Some("https://example.com/a.png")
+        );
+        assert_eq!(input_image(&GenerationRequest::prompt("m", "go")), None);
     }
 }

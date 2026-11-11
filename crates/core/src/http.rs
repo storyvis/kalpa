@@ -43,22 +43,120 @@ pub async fn read_json<T: DeserializeOwned>(response: reqwest::Response) -> Kalp
     })
 }
 
-/// Preserve status, without reflecting untrusted error bodies (which can echo keys).
+/// Preserve status. The body itself is never reflected (it can echo keys); only
+/// a JSON `error.message` (and `error.code`), scrubbed by [`scrub`], is kept.
 pub async fn check_response(
     resp: reqwest::Response,
     provider_name: &str,
 ) -> KalpaResult<reqwest::Response> {
     let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    let reason = error_message(&read_error_body(resp).await)
+        .map(|m| format!(": {m}"))
+        .unwrap_or_default();
     if status.as_u16() == 429 {
-        return Err(KalpaError::RateLimited(format!("{provider_name} HTTP 429")));
+        return Err(KalpaError::RateLimited(format!(
+            "{provider_name} HTTP 429{reason}"
+        )));
     }
-    if !status.is_success() {
-        return Err(KalpaError::ProviderError {
-            status: status.as_u16(),
-            message: format!("{provider_name} request failed"),
-        });
+    Err(KalpaError::ProviderError {
+        status: status.as_u16(),
+        message: format!("{provider_name} request failed{reason}"),
+    })
+}
+
+/// The most of an error body read for its message; the rest is not read.
+const MAX_ERROR_BYTES: usize = 16 * 1024;
+
+/// The longest provider message kept.
+const MAX_MESSAGE_CHARS: usize = 300;
+
+async fn read_error_body(mut resp: reqwest::Response) -> Vec<u8> {
+    let mut body = Vec::new();
+    while let Ok(Some(chunk)) = resp.chunk().await {
+        let room = MAX_ERROR_BYTES - body.len();
+        body.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        if body.len() >= MAX_ERROR_BYTES {
+            break;
+        }
     }
-    Ok(resp)
+    body
+}
+
+/// The reason in a JSON error body: `error.message` (with a string
+/// `error.code`), the shape OpenAI, Anthropic and Google answer with, or
+/// fal's `detail` (a string, or validation errors' `loc` and `msg`).
+/// Anything else is `None`.
+pub(crate) fn error_message(body: &[u8]) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Body {
+        error: Option<Inner>,
+        detail: Option<serde_json::Value>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Inner {
+        message: Option<String>,
+        code: Option<serde_json::Value>,
+    }
+    let body: Body = serde_json::from_slice(body).ok()?;
+    let Some(error) = body.error else {
+        return body.detail.as_ref().and_then(fal_detail).map(|m| scrub(&m));
+    };
+    let message = error.message.filter(|m| !m.trim().is_empty())?;
+    let message = match error.code.as_ref().and_then(|c| c.as_str()) {
+        Some(code) if !code.is_empty() => format!("{message} ({code})"),
+        _ => message,
+    };
+    Some(scrub(&message))
+}
+
+/// fal's `detail`: `"text"`, or `[{"loc": ["body", "image_size"], "msg": "…"}]`.
+fn fal_detail(detail: &serde_json::Value) -> Option<String> {
+    if let Some(text) = detail.as_str().filter(|t| !t.trim().is_empty()) {
+        return Some(text.to_string());
+    }
+    let items: Vec<String> = detail
+        .as_array()?
+        .iter()
+        .filter_map(|item| {
+            let msg = item.get("msg")?.as_str()?;
+            let field = item
+                .get("loc")
+                .and_then(|l| l.as_array())
+                .and_then(|l| l.last())
+                .and_then(|f| f.as_str());
+            Some(match field {
+                Some(f) => format!("{f}: {msg}"),
+                None => msg.to_string(),
+            })
+        })
+        .take(3)
+        .collect();
+    (!items.is_empty()).then(|| items.join("; "))
+}
+
+/// A provider message made safe to pass on: words that look like a key or a
+/// bearer token are replaced, whitespace collapsed, the length capped.
+pub(crate) fn scrub(message: &str) -> String {
+    let secret = |w: &str| {
+        w.contains("sk-")
+            || w.contains("AIza")
+            || w.eq_ignore_ascii_case("bearer")
+            || (w.len() >= 32
+                && w.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_.*".contains(c)))
+    };
+    let joined = message
+        .split_whitespace()
+        .map(|w| if secret(w) { "[redacted]" } else { w })
+        .collect::<Vec<_>>()
+        .join(" ");
+    match joined.char_indices().nth(MAX_MESSAGE_CHARS) {
+        Some((i, _)) => format!("{}…", &joined[..i]),
+        None => joined,
+    }
 }
 
 pub fn generated_error<E>(error: kalpa_libgen::progenitor_client::Error<E>) -> KalpaError {
@@ -98,6 +196,47 @@ mod tests {
         let error = check_response(response, "test").await.unwrap_err();
         assert!(matches!(error, KalpaError::RateLimited(_)));
         assert!(!error.to_string().contains("secret"));
+    }
+    #[tokio::test]
+    async fn a_json_error_message_is_kept_without_keys() {
+        let body = r#"{"error":{"message":"Incorrect API key provided: sk-proj-abc***xyz. See https://platform.openai.com","code":"invalid_api_key"}}"#;
+        let response =
+            reqwest::Response::from(http::Response::builder().status(401).body(body).unwrap());
+        let error = check_response(response, "openai").await.unwrap_err();
+        let KalpaError::ProviderError { status, message } = error else {
+            panic!("wrong variant")
+        };
+        assert_eq!(status, 401);
+        assert!(
+            message.starts_with("openai request failed: Incorrect API key provided: [redacted]"),
+            "{message}"
+        );
+        assert!(message.ends_with("(invalid_api_key)"), "{message}");
+        assert!(!message.contains("sk-"), "{message}");
+    }
+    #[test]
+    fn scrub_redacts_token_like_words_and_caps_length() {
+        assert_eq!(
+            scrub("bad key AIzaSyA1234 and Bearer x"),
+            "bad key [redacted] and [redacted] x"
+        );
+        assert_eq!(
+            scrub("token abcdefghijklmnopqrstuvwxyz0123456789 here"),
+            "token [redacted] here"
+        );
+        assert_eq!(
+            scrub(&"word ".repeat(200)).chars().count(),
+            MAX_MESSAGE_CHARS + 1
+        );
+        assert_eq!(error_message(b"<html>502</html>"), None);
+        assert_eq!(
+            error_message(br#"{"detail":[{"loc":["body","image_size"],"msg":"value is not a valid enumeration member","type":"type_error.enum"}]}"#).as_deref(),
+            Some("image_size: value is not a valid enumeration member")
+        );
+        assert_eq!(
+            error_message(br#"{"detail":"Not found"}"#).as_deref(),
+            Some("Not found")
+        );
     }
     #[tokio::test]
     async fn malformed_success_response_does_not_echo_enum_values() {
