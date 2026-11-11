@@ -23,8 +23,8 @@ Design goals:
 ## Features
 
 - Text generation via OpenAI, Google Gemini, Google Vertex AI, and Anthropic Claude
-- Image generation via Fal.ai, OpenAI (DALL-E), and Google Vertex AI (Imagen)
-- Video generation via Fal.ai and Google Vertex AI (Veo)
+- Image generation via Fal.ai, OpenAI (DALL-E, gpt-image), and Google Vertex AI (Imagen)
+- Video generation via Fal.ai, OpenAI (Sora) and Google Vertex AI (Veo)
 - Text-to-speech and speech-to-text support (OpenAI TTS/Whisper)
 - Interactive CLI with colored output and progress indicators
 - Async job tracking for long-running generations (queue-based polling)

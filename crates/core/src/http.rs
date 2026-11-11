@@ -43,22 +43,89 @@ pub async fn read_json<T: DeserializeOwned>(response: reqwest::Response) -> Kalp
     })
 }
 
-/// Preserve status, without reflecting untrusted error bodies (which can echo keys).
+/// Preserve status. The body itself is never reflected (it can echo keys); only
+/// a JSON `error.message` (and `error.code`), scrubbed by [`scrub`], is kept.
 pub async fn check_response(
     resp: reqwest::Response,
     provider_name: &str,
 ) -> KalpaResult<reqwest::Response> {
     let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    let reason = error_message(&read_error_body(resp).await)
+        .map(|m| format!(": {m}"))
+        .unwrap_or_default();
     if status.as_u16() == 429 {
-        return Err(KalpaError::RateLimited(format!("{provider_name} HTTP 429")));
+        return Err(KalpaError::RateLimited(format!(
+            "{provider_name} HTTP 429{reason}"
+        )));
     }
-    if !status.is_success() {
-        return Err(KalpaError::ProviderError {
-            status: status.as_u16(),
-            message: format!("{provider_name} request failed"),
-        });
+    Err(KalpaError::ProviderError {
+        status: status.as_u16(),
+        message: format!("{provider_name} request failed{reason}"),
+    })
+}
+
+/// The most of an error body read for its message; the rest is not read.
+const MAX_ERROR_BYTES: usize = 16 * 1024;
+
+/// The longest provider message kept.
+const MAX_MESSAGE_CHARS: usize = 300;
+
+async fn read_error_body(mut resp: reqwest::Response) -> Vec<u8> {
+    let mut body = Vec::new();
+    while let Ok(Some(chunk)) = resp.chunk().await {
+        let room = MAX_ERROR_BYTES - body.len();
+        body.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        if body.len() >= MAX_ERROR_BYTES {
+            break;
+        }
     }
-    Ok(resp)
+    body
+}
+
+/// `error.message` (with a string `error.code`) from a JSON error body, the
+/// shape OpenAI, Anthropic and Google answer with. Anything else is `None`.
+pub(crate) fn error_message(body: &[u8]) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Body {
+        error: Inner,
+    }
+    #[derive(serde::Deserialize)]
+    struct Inner {
+        message: Option<String>,
+        code: Option<serde_json::Value>,
+    }
+    let Body { error } = serde_json::from_slice(body).ok()?;
+    let message = error.message.filter(|m| !m.trim().is_empty())?;
+    let message = match error.code.as_ref().and_then(|c| c.as_str()) {
+        Some(code) if !code.is_empty() => format!("{message} ({code})"),
+        _ => message,
+    };
+    Some(scrub(&message))
+}
+
+/// A provider message made safe to pass on: words that look like a key or a
+/// bearer token are replaced, whitespace collapsed, the length capped.
+pub(crate) fn scrub(message: &str) -> String {
+    let secret = |w: &str| {
+        w.contains("sk-")
+            || w.contains("AIza")
+            || w.eq_ignore_ascii_case("bearer")
+            || (w.len() >= 32
+                && w.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_.*".contains(c)))
+    };
+    let joined = message
+        .split_whitespace()
+        .map(|w| if secret(w) { "[redacted]" } else { w })
+        .collect::<Vec<_>>()
+        .join(" ");
+    match joined.char_indices().nth(MAX_MESSAGE_CHARS) {
+        Some((i, _)) => format!("{}…", &joined[..i]),
+        None => joined,
+    }
 }
 
 pub fn generated_error<E>(error: kalpa_libgen::progenitor_client::Error<E>) -> KalpaError {
@@ -98,6 +165,39 @@ mod tests {
         let error = check_response(response, "test").await.unwrap_err();
         assert!(matches!(error, KalpaError::RateLimited(_)));
         assert!(!error.to_string().contains("secret"));
+    }
+    #[tokio::test]
+    async fn a_json_error_message_is_kept_without_keys() {
+        let body = r#"{"error":{"message":"Incorrect API key provided: sk-proj-abc***xyz. See https://platform.openai.com","code":"invalid_api_key"}}"#;
+        let response =
+            reqwest::Response::from(http::Response::builder().status(401).body(body).unwrap());
+        let error = check_response(response, "openai").await.unwrap_err();
+        let KalpaError::ProviderError { status, message } = error else {
+            panic!("wrong variant")
+        };
+        assert_eq!(status, 401);
+        assert!(
+            message.starts_with("openai request failed: Incorrect API key provided: [redacted]"),
+            "{message}"
+        );
+        assert!(message.ends_with("(invalid_api_key)"), "{message}");
+        assert!(!message.contains("sk-"), "{message}");
+    }
+    #[test]
+    fn scrub_redacts_token_like_words_and_caps_length() {
+        assert_eq!(
+            scrub("bad key AIzaSyA1234 and Bearer x"),
+            "bad key [redacted] and [redacted] x"
+        );
+        assert_eq!(
+            scrub("token abcdefghijklmnopqrstuvwxyz0123456789 here"),
+            "token [redacted] here"
+        );
+        assert_eq!(
+            scrub(&"word ".repeat(200)).chars().count(),
+            MAX_MESSAGE_CHARS + 1
+        );
+        assert_eq!(error_message(b"<html>502</html>"), None);
     }
     #[tokio::test]
     async fn malformed_success_response_does_not_echo_enum_values() {
