@@ -53,18 +53,73 @@ pub async fn check_response(
     if status.is_success() {
         return Ok(resp);
     }
-    let reason = error_message(&read_error_body(resp).await)
+    let header_delay = retry_after_header(resp.headers());
+    let body = read_error_body(resp).await;
+    let reason = error_message(&body)
         .map(|m| format!(": {m}"))
         .unwrap_or_default();
+    let google = google_details(&body);
     if status.as_u16() == 429 {
-        return Err(KalpaError::RateLimited(format!(
-            "{provider_name} HTTP 429{reason}"
+        return Err(KalpaError::RateLimited(crate::error::RateLimit {
+            message: format!("{provider_name} HTTP 429{reason}"),
+            retry_after: header_delay.or(google.retry_delay),
+        }));
+    }
+    // Google refuses a bad key with 400 INVALID_ARGUMENT, not 401.
+    if google.invalid_key {
+        return Err(KalpaError::Auth(format!(
+            "{provider_name} refused the API key{reason}"
         )));
     }
     Err(KalpaError::ProviderError {
         status: status.as_u16(),
         message: format!("{provider_name} request failed{reason}"),
     })
+}
+
+/// The longest a provider's retry delay is believed.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(3600);
+
+/// `Retry-After` in seconds (an HTTP date is not read).
+fn retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let secs: u64 = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    Some(Duration::from_secs(secs).min(MAX_RETRY_AFTER))
+}
+
+/// What Google's `error.details[]` adds to the message.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct GoogleDetails {
+    /// `google.rpc.RetryInfo.retryDelay` (`"34s"`, `"0.5s"`).
+    pub retry_delay: Option<Duration>,
+    /// `google.rpc.ErrorInfo.reason` is `API_KEY_INVALID`.
+    pub invalid_key: bool,
+}
+
+pub(crate) fn google_details(body: &[u8]) -> GoogleDetails {
+    let mut out = GoogleDetails::default();
+    let Ok(body) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return out;
+    };
+    for detail in body["error"]["details"].as_array().into_iter().flatten() {
+        if let Some(delay) = detail["retryDelay"]
+            .as_str()
+            .and_then(|d| d.strip_suffix('s'))
+            .and_then(|d| d.parse::<f64>().ok())
+            .and_then(|d| Duration::try_from_secs_f64(d).ok())
+        {
+            out.retry_delay = Some(delay.min(MAX_RETRY_AFTER));
+        }
+        if detail["reason"] == "API_KEY_INVALID" {
+            out.invalid_key = true;
+        }
+    }
+    out
 }
 
 /// The most of an error body read for its message; the rest is not read.
@@ -99,13 +154,16 @@ pub(crate) fn error_message(body: &[u8]) -> Option<String> {
     struct Inner {
         message: Option<String>,
         code: Option<serde_json::Value>,
+        /// Google's canonical code (`RESOURCE_EXHAUSTED`); its `code` is the number.
+        status: Option<String>,
     }
     let body: Body = serde_json::from_slice(body).ok()?;
     let Some(error) = body.error else {
         return body.detail.as_ref().and_then(fal_detail).map(|m| scrub(&m));
     };
     let message = error.message.filter(|m| !m.trim().is_empty())?;
-    let message = match error.code.as_ref().and_then(|c| c.as_str()) {
+    let code = error.code.as_ref().and_then(|c| c.as_str());
+    let message = match code.or(error.status.as_deref()) {
         Some(code) if !code.is_empty() => format!("{message} ({code})"),
         _ => message,
     };

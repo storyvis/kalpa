@@ -5,9 +5,10 @@ use kalpa_libgen::vertex;
 use tracing::{info, instrument};
 use uuid::Uuid;
 
+use super::gemini;
 use crate::auth::{ServiceAccount, VertexAuthToken};
 use crate::error::{KalpaError, KalpaResult};
-use crate::generation::{GenerationRequest, GenerationResponse, Part};
+use crate::generation::{GenerationRequest, GenerationResponse, Modality, Part};
 use crate::provider::{
     CompletionProvider, GenerationProvider, ImageGenerationProvider, JobHandle, PollStatus,
     SubmitOutcome, VideoGenerationProvider,
@@ -32,6 +33,10 @@ pub struct VertexProvider {
     http: reqwest::Client,
     project_id: String,
     location: String,
+    /// Where Veo runs: the configured region (Veo is not served at `global`).
+    video_location: String,
+    /// Another endpoint for the raw calls (a test server).
+    base_url: Option<String>,
     gcs_bucket: Option<String>,
     /// When set, access tokens are refreshed via JWT exchange before expiry.
     service_account: Option<ServiceAccount>,
@@ -64,7 +69,7 @@ impl VertexProvider {
     pub fn new(
         bearer_token: String,
         project_id: String,
-        _location: String,
+        location: String,
         gcs_bucket: Option<String>,
     ) -> Self {
         let client = Self::build_client(&bearer_token);
@@ -81,6 +86,8 @@ impl VertexProvider {
                 .expect("HTTP client initialization"),
             project_id,
             location: "global".to_string(),
+            video_location: video_location(&location),
+            base_url: None,
             gcs_bucket,
             service_account: None,
             auth: Mutex::new(AuthInner { token, client }),
@@ -90,7 +97,7 @@ impl VertexProvider {
     /// Create a provider that mints and refreshes OAuth access tokens from a service account.
     pub async fn from_service_account(
         sa: ServiceAccount,
-        _location: String,
+        location: String,
         gcs_bucket: Option<String>,
     ) -> KalpaResult<Self> {
         let token = VertexAuthToken::from_service_account(sa.clone()).await?;
@@ -101,6 +108,8 @@ impl VertexProvider {
             http: crate::http::client_builder().build()?,
             project_id,
             location: "global".to_string(),
+            video_location: video_location(&location),
+            base_url: None,
             gcs_bucket,
             service_account: Some(sa),
             auth: Mutex::new(AuthInner { token, client }),
@@ -125,6 +134,46 @@ impl VertexProvider {
         let sa: ServiceAccount = serde_json::from_str(&json_content)
             .map_err(|e| KalpaError::Config(format!("Invalid service account JSON: {}", e)))?;
         Self::from_service_account(sa, location, gcs_bucket).await
+    }
+
+    /// Point the Gemini-image and Veo calls at another endpoint (a test server).
+    pub fn with_base_url(mut self, base: &str) -> Self {
+        self.base_url = Some(base.trim_end_matches('/').to_string());
+        self
+    }
+
+    /// `…/v1/projects/{p}/locations/{l}/publishers/google/models/{model}:{method}`.
+    fn model_url(&self, location: &str, model: &str, method: &str) -> String {
+        let host = match &self.base_url {
+            Some(base) => base.clone(),
+            None if location == "global" => "https://aiplatform.googleapis.com".into(),
+            None => format!("https://{location}-aiplatform.googleapis.com"),
+        };
+        format!(
+            "{host}/v1/projects/{}/locations/{location}/publishers/google/models/{model}:{method}",
+            self.project_id
+        )
+    }
+
+    /// POST a JSON body with the current token; Vertex's own error message is kept.
+    async fn post_json(
+        &self,
+        url: String,
+        body: &serde_json::Value,
+    ) -> KalpaResult<serde_json::Value> {
+        let (_, bearer) = self.auth_snapshot().await?;
+        let resp = self
+            .http
+            .post(url)
+            .header(
+                reqwest::header::AUTHORIZATION,
+                crate::http::secret_header(&format!("Bearer {bearer}")),
+            )
+            .json(body)
+            .send()
+            .await?;
+        let resp = crate::http::check_response(resp, "vertex").await?;
+        crate::http::read_json(resp).await
     }
 
     /// Ensure the access token is fresh, then return a cloned client and bearer.
@@ -806,6 +855,40 @@ impl GenerationProvider for VertexProvider {
 
     async fn submit(&self, request: &GenerationRequest) -> KalpaResult<SubmitOutcome> {
         let model = request.model.split().1.to_string();
+        let wants = |m: Modality| {
+            request
+                .response_modalities
+                .as_ref()
+                .is_some_and(|all| all.contains(&m))
+        };
+
+        // Veo: a long-running operation, polled by `poll`.
+        if gemini::is_veo(&model) || wants(Modality::Video) {
+            let url = self.model_url(&self.video_location, &model, "predictLongRunning");
+            let operation = self.post_json(url, &gemini::veo_body(request)?).await?;
+            let name = operation["name"].as_str().unwrap_or_default();
+            return Ok(SubmitOutcome::Async(JobHandle {
+                provider_request_id: operation_name(name)?.to_string(),
+                poll_url: None,
+                response_url: None,
+            }));
+        }
+
+        // A Gemini image model ("Nano Banana"): images in and out through
+        // `generateContent`, the same shape the Gemini API speaks.
+        if model.starts_with("gemini") && (wants(Modality::Image) || model.contains("image")) {
+            let body = gemini::generate_content_body(request)?;
+            let url = self.model_url(&self.location, &model, "generateContent");
+            let mut results = Vec::new();
+            for _ in 0..gemini::image_count(request) {
+                let reply = self.post_json(url.clone(), &body).await;
+                results.push(reply.and_then(|v| {
+                    gemini::parse_generate_content(&model, wants(Modality::Image), v)
+                }));
+            }
+            return Ok(SubmitOutcome::Sync(gemini::merge_images(results)?));
+        }
+
         let prompt = request.text_prompt()?;
 
         if model.contains("imagen") {
@@ -856,11 +939,62 @@ impl GenerationProvider for VertexProvider {
         }
     }
 
-    async fn poll(&self, _handle: &JobHandle) -> KalpaResult<PollStatus> {
-        Err(KalpaError::Other(
-            "vertex generation is synchronous; poll not supported".into(),
-        ))
+    async fn poll(&self, handle: &JobHandle) -> KalpaResult<PollStatus> {
+        let name = operation_name(&handle.provider_request_id)?;
+        let model = name
+            .split("/models/")
+            .nth(1)
+            .and_then(|rest| rest.split("/operations/").next())
+            .ok_or_else(invalid_operation)?;
+        // Veo operations answer at `:fetchPredictOperation`, not the LRO API.
+        let url = self.model_url(&self.video_location, model, "fetchPredictOperation");
+        let operation = self
+            .post_json(url, &serde_json::json!({"operationName": name}))
+            .await?;
+        let part = match gemini::veo_state(&operation) {
+            gemini::VeoState::Running => return Ok(PollStatus::InProgress),
+            gemini::VeoState::Failed(reason) => return Ok(PollStatus::Failed(reason)),
+            gemini::VeoState::Inline { mime, data } => Part::Video {
+                url: format!("data:{mime};base64,{data}"),
+                mime: Some(mime),
+            },
+            // Only when a `storageUri` was asked for: the caller reads the bucket.
+            gemini::VeoState::Uri(uri) => Part::Video {
+                url: uri,
+                mime: Some("video/mp4".into()),
+            },
+        };
+        Ok(PollStatus::Completed(GenerationResponse {
+            model: model.to_string(),
+            parts: vec![part],
+            usage: None,
+        }))
     }
+}
+
+/// Veo is served in a region, never at `global`.
+fn video_location(location: &str) -> String {
+    match location.trim() {
+        "" | "global" => "us-central1".to_string(),
+        region => region.to_string(),
+    }
+}
+
+fn invalid_operation() -> KalpaError {
+    KalpaError::ProviderError {
+        status: 502,
+        message: "vertex returned an invalid operation name".into(),
+    }
+}
+
+/// An operation name sent back to Vertex: `projects/…/models/…/operations/…`.
+fn operation_name(name: &str) -> KalpaResult<&str> {
+    let ok = name.starts_with("projects/")
+        && !name.contains("..")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-./".contains(c));
+    ok.then_some(name).ok_or_else(invalid_operation)
 }
 
 #[cfg(test)]
