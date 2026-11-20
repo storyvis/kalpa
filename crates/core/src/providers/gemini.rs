@@ -97,6 +97,17 @@ struct UsageMetadata {
     thoughts_token_count: u32,
     #[serde(default)]
     total_token_count: u32,
+    /// The output by modality: an image's own tokens are `IMAGE`.
+    #[serde(default)]
+    candidates_tokens_details: Vec<ModalityTokens>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModalityTokens {
+    modality: Option<String>,
+    #[serde(default)]
+    token_count: u32,
 }
 
 #[derive(Deserialize)]
@@ -298,10 +309,24 @@ pub(crate) fn parse_generate_content(
         })?;
     let usage = parsed.usage_metadata.map(|u| {
         let completion = u.candidates_token_count + u.thoughts_token_count;
+        // An image model counts its thinking inside `candidatesTokenCount`
+        // and details only the image: what is left over is billed as text.
+        let media: u32 = u
+            .candidates_tokens_details
+            .iter()
+            .filter(|d| matches!(d.modality.as_deref(), Some("IMAGE" | "VIDEO" | "AUDIO")))
+            .map(|d| d.token_count)
+            .sum();
+        let reasoning = if media > 0 {
+            completion.saturating_sub(media)
+        } else {
+            u.thoughts_token_count
+        };
         Usage {
             prompt_tokens: u.prompt_token_count,
             completion_tokens: completion,
             total_tokens: u.total_token_count.max(u.prompt_token_count + completion),
+            reasoning_tokens: (reasoning > 0).then_some(reasoning),
         }
     });
     if let Some(reason) = parsed.prompt_feedback.and_then(|f| f.block_reason) {
@@ -411,6 +436,10 @@ pub(crate) fn merge_images(
                         prompt_tokens: a.prompt_tokens + b.prompt_tokens,
                         completion_tokens: a.completion_tokens + b.completion_tokens,
                         total_tokens: a.total_tokens + b.total_tokens,
+                        reasoning_tokens: match (a.reasoning_tokens, b.reasoning_tokens) {
+                            (None, None) => None,
+                            (x, y) => Some(x.unwrap_or(0) + y.unwrap_or(0)),
+                        },
                     }),
                     (a, b) => a.or(b),
                 };
@@ -701,6 +730,7 @@ fn omni_usage(interaction: &Value, params: Option<&Value>) -> Usage {
         prompt_tokens: prompt,
         completion_tokens: completion,
         total_tokens: prompt + completion,
+        reasoning_tokens: None,
     }
 }
 
@@ -1031,6 +1061,43 @@ mod tests {
         ]});
         let text = parse_generate_content("m", false, reply).unwrap();
         assert!(matches!(&text.parts[0], Part::Text { text } if text == "hi"));
+    }
+
+    #[test]
+    fn an_images_own_tokens_are_told_apart_from_the_thinking_around_them() {
+        // The live API's shape (gemini-3.1-flash-image, 2026-11): thinking is
+        // inside `candidatesTokenCount`, and only the image is detailed.
+        let reply = json!({
+            "candidates": [{"content": {"parts": [
+                {"inlineData": {"mimeType": "image/jpeg", "data": "AAAA"}, "thoughtSignature": "s"},
+            ]}, "finishReason": "STOP"}],
+            "usageMetadata": {
+                "promptTokenCount": 10, "candidatesTokenCount": 1517, "totalTokenCount": 1527,
+                "candidatesTokensDetails": [{"modality": "IMAGE", "tokenCount": 1120}],
+            },
+        });
+        let usage = parse_generate_content("m", true, reply)
+            .unwrap()
+            .usage
+            .unwrap();
+        assert_eq!(
+            (usage.completion_tokens, usage.reasoning_tokens),
+            (1517, Some(397))
+        );
+        // A text reply: thinking is its own count, outside the candidates'.
+        let reply = json!({
+            "candidates": [{"content": {"parts": [{"text": "pong"}]}, "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 38, "candidatesTokenCount": 5, "thoughtsTokenCount": 61, "totalTokenCount": 104,
+                "candidatesTokensDetails": [{"modality": "TEXT", "tokenCount": 5}]},
+        });
+        let usage = parse_generate_content("m", false, reply)
+            .unwrap()
+            .usage
+            .unwrap();
+        assert_eq!(
+            (usage.completion_tokens, usage.reasoning_tokens),
+            (66, Some(61))
+        );
     }
 
     #[tokio::test]

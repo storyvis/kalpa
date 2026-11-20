@@ -325,6 +325,7 @@ impl CompletionProvider for VertexProvider {
             prompt_tokens: u.prompt_token_count.unwrap_or(0) as u32,
             completion_tokens: u.candidates_token_count.unwrap_or(0) as u32,
             total_tokens: u.total_token_count.unwrap_or(0) as u32,
+            reasoning_tokens: None,
         });
 
         Ok(CompletionResponse {

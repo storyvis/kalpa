@@ -149,6 +149,7 @@ impl CompletionProvider for ClaudeProvider {
             prompt_tokens: u.input_tokens.unwrap_or(0) as u32,
             completion_tokens: u.output_tokens.unwrap_or(0) as u32,
             total_tokens: (u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0)) as u32,
+            reasoning_tokens: None,
         });
 
         Ok(CompletionResponse {
