@@ -25,7 +25,32 @@ use tokio::time::sleep;
 struct AuthInner {
     token: VertexAuthToken,
     client: vertex::Client,
+    /// When this token was minted: a token that young is not stale, so a
+    /// 401 with it is not cured by minting another.
+    minted_at: std::time::Instant,
+    /// The last refresh that failed, so a broken token endpoint (or a key
+    /// mid-rotation) is asked again every few seconds, not on every request.
+    refresh_failed_at: Option<std::time::Instant>,
 }
+
+impl AuthInner {
+    fn new(token: VertexAuthToken, client: vertex::Client) -> Self {
+        Self {
+            token,
+            client,
+            minted_at: std::time::Instant::now(),
+            refresh_failed_at: None,
+        }
+    }
+}
+
+/// A token is replaced this long before it expires, so one failed refresh
+/// costs nothing: the old token serves until a later try succeeds.
+const REFRESH_AHEAD: Duration = Duration::from_secs(300);
+/// How soon a failed refresh is tried again while the old token still works.
+const REFRESH_RETRY: Duration = Duration::from_secs(15);
+/// A token younger than this is not re-minted on a 401.
+const MIN_TOKEN_AGE: Duration = Duration::from_secs(30);
 
 /// Vertex AI provider for Gemini models, Imagen, and Veo.
 pub struct VertexProvider {
@@ -90,7 +115,7 @@ impl VertexProvider {
             base_url: None,
             gcs_bucket,
             service_account: None,
-            auth: Mutex::new(AuthInner { token, client }),
+            auth: Mutex::new(AuthInner::new(token, client)),
         }
     }
 
@@ -112,7 +137,7 @@ impl VertexProvider {
             base_url: None,
             gcs_bucket,
             service_account: Some(sa),
-            auth: Mutex::new(AuthInner { token, client }),
+            auth: Mutex::new(AuthInner::new(token, client)),
         })
     }
 
@@ -161,29 +186,85 @@ impl VertexProvider {
         url: String,
         body: &serde_json::Value,
     ) -> KalpaResult<serde_json::Value> {
-        let (_, bearer) = self.auth_snapshot().await?;
-        let resp = self
-            .http
-            .post(url)
-            .header(
-                reqwest::header::AUTHORIZATION,
-                crate::http::secret_header(&format!("Bearer {bearer}")),
-            )
-            .json(body)
-            .send()
-            .await?;
-        let resp = crate::http::check_response(resp, "vertex").await?;
-        crate::http::read_json(resp).await
+        let mut retried = false;
+        loop {
+            let (_, bearer) = self.auth_snapshot().await?;
+            let resp = self
+                .http
+                .post(url.clone())
+                .header(
+                    reqwest::header::AUTHORIZATION,
+                    crate::http::secret_header(&format!("Bearer {bearer}")),
+                )
+                .json(body)
+                .send()
+                .await?;
+            // The token was refused though it has not expired (revoked, or
+            // this host's clock is off): the request did nothing, so mint a
+            // new token and send it once more.
+            if resp.status().as_u16() == 401 && !retried && self.refresh_token().await {
+                retried = true;
+                continue;
+            }
+            let resp = crate::http::check_response(resp, "vertex").await?;
+            return crate::http::read_json(resp).await;
+        }
     }
 
-    /// Ensure the access token is fresh, then return a cloned client and bearer.
+    /// Mint a new access token now, because the current one was refused.
+    /// False when there is nothing to do: no service account, a token too
+    /// young to be stale, or the token endpoint refusing (the caller then
+    /// reports the 401 it got).
+    pub async fn refresh_token(&self) -> bool {
+        let Some(sa) = &self.service_account else {
+            return false;
+        };
+        let mut inner = self.auth.lock().await;
+        if inner.minted_at.elapsed() < MIN_TOKEN_AGE {
+            return false;
+        }
+        match VertexAuthToken::from_service_account(sa.clone()).await {
+            Ok(token) => {
+                inner.client = Self::build_client(&token.access_token);
+                inner.token = token;
+                inner.minted_at = std::time::Instant::now();
+                inner.refresh_failed_at = None;
+                info!("replaced a refused Vertex AI access token");
+                true
+            }
+            Err(error) => {
+                tracing::warn!(%error, "Vertex AI access token was refused and could not be replaced");
+                false
+            }
+        }
+    }
+
+    /// The current token and its client, replacing the token first when it
+    /// is close to expiry. A refresh that fails while the old token still
+    /// works is logged and tried again shortly; requests fail only once the
+    /// token has really expired.
     async fn auth_snapshot(&self) -> KalpaResult<(vertex::Client, String)> {
         let mut inner = self.auth.lock().await;
         if let Some(sa) = &self.service_account {
-            if inner.token.is_expired() {
-                inner.token.refresh_if_needed_sa(sa).await?;
-                inner.client = Self::build_client(&inner.token.access_token);
-                info!("refreshed Vertex AI OAuth access token");
+            let due = inner.token.expires_within(REFRESH_AHEAD)
+                && inner
+                    .refresh_failed_at
+                    .is_none_or(|at| at.elapsed() >= REFRESH_RETRY || inner.token.is_expired());
+            if due {
+                match VertexAuthToken::from_service_account(sa.clone()).await {
+                    Ok(token) => {
+                        inner.client = Self::build_client(&token.access_token);
+                        inner.token = token;
+                        inner.minted_at = std::time::Instant::now();
+                        inner.refresh_failed_at = None;
+                        info!("refreshed Vertex AI OAuth access token");
+                    }
+                    Err(error) if !inner.token.is_expired() => {
+                        inner.refresh_failed_at = Some(std::time::Instant::now());
+                        tracing::warn!(%error, "Vertex AI token refresh failed; the current token is still valid");
+                    }
+                    Err(error) => return Err(error),
+                }
             }
         }
         Ok((inner.client.clone(), inner.token.access_token.clone()))
@@ -863,6 +944,45 @@ impl GenerationProvider for VertexProvider {
                 .is_some_and(|all| all.contains(&m))
         };
 
+        // An Omni model: one call to the Interactions API, served only at
+        // the `global` location, the video returned in the reply (a
+        // reference would need a storage bucket to be delivered to).
+        if model.starts_with("gemini-omni") {
+            let host = self
+                .base_url
+                .as_deref()
+                .unwrap_or("https://aiplatform.googleapis.com");
+            let url = format!(
+                "{host}/v1beta1/projects/{}/locations/global/interactions",
+                self.project_id
+            );
+            let interaction = self
+                .post_json(url, &gemini::omni_body(&model, request, false)?)
+                .await?;
+            let part = match gemini::omni_video(&interaction["steps"]) {
+                Some((mime, gemini::OmniVideo::Data(data))) => Part::Video {
+                    url: format!("data:{mime};base64,{data}"),
+                    mime: Some(mime),
+                },
+                Some((mime, gemini::OmniVideo::Uri(uri))) => Part::Video {
+                    url: uri,
+                    mime: Some(mime),
+                },
+                None => {
+                    let status = interaction["status"].as_str().unwrap_or("no status");
+                    return Err(KalpaError::ProviderError {
+                        status: 502,
+                        message: format!("vertex returned no video ({status})"),
+                    });
+                }
+            };
+            return Ok(SubmitOutcome::Sync(GenerationResponse {
+                model,
+                parts: vec![part],
+                usage: Some(gemini::omni_usage(&interaction, request.params.as_ref())),
+            }));
+        }
+
         // Veo: a long-running operation, polled by `poll`.
         if gemini::is_veo(&model) || wants(Modality::Video) {
             let url = self.model_url(&self.video_location, &model, "predictLongRunning");
@@ -1045,5 +1165,85 @@ mod auth_tests {
             provider.auth.lock().await.token.access_token,
             "cached-token"
         );
+    }
+
+    #[tokio::test]
+    async fn a_refresh_that_fails_early_leaves_the_working_token_serving() {
+        let mut provider = VertexProvider::new(
+            "cached-token".into(),
+            "test-project".into(),
+            "global".into(),
+            None,
+        );
+        provider.service_account = Some(invalid_service_account());
+        // Two minutes left: inside the refresh window, not yet expired.
+        provider.auth.lock().await.token.expires_at = SystemTime::now() + Duration::from_secs(120);
+        assert_eq!(provider.access_token().await.unwrap(), "cached-token");
+        assert!(provider.auth.lock().await.refresh_failed_at.is_some());
+        // And it is not hammered: the next call does not try again at once.
+        let failed_at = provider.auth.lock().await.refresh_failed_at;
+        assert_eq!(provider.access_token().await.unwrap(), "cached-token");
+        assert_eq!(provider.auth.lock().await.refresh_failed_at, failed_at);
+        // A token just minted is not replaced because one request was refused.
+        assert!(!provider.refresh_token().await);
+    }
+
+    #[tokio::test]
+    async fn an_omni_video_on_vertex_is_one_interaction_with_the_bytes_inline() {
+        use wiremock::matchers::{body_partial_json, header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        // The live shape (2026-11-21): thinking and video tokens apart.
+        Mock::given(method("POST"))
+            .and(path("/v1beta1/projects/test-project/locations/global/interactions"))
+            .and(header("authorization", "Bearer cached-token"))
+            .and(body_partial_json(serde_json::json!({
+                "model": "gemini-omni-1.2-flash",
+                "response_format": {"type": "video", "resolution": "360p", "duration": "3s"},
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "completed",
+                "steps": [{"type": "thought"}, {"type": "model_output", "content": [
+                    {"type": "video", "mime_type": "video/mp4", "data": "bXA0IQ=="},
+                ]}],
+                "usage": {"total_input_tokens": 14, "total_output_tokens": 5793, "total_thought_tokens": 593},
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let provider = VertexProvider::new(
+            "cached-token".into(),
+            "test-project".into(),
+            "us-central1".into(),
+            None,
+        )
+        .with_base_url(&server.uri());
+        let request = GenerationRequest {
+            model: "gemini-omni-1.2-flash".into(),
+            parts: vec![Part::text("waves")],
+            params: Some(serde_json::json!({"seconds": "3", "size": "640x360"})),
+            response_modalities: Some(vec![Modality::Video]),
+        };
+        let SubmitOutcome::Sync(response) = provider.submit(&request).await.unwrap() else {
+            panic!("expected a synchronous reply")
+        };
+        assert!(matches!(
+            &response.parts[0],
+            Part::Video { url, .. } if url == "data:video/mp4;base64,bXA0IQ=="
+        ));
+        let usage = response.usage.unwrap();
+        assert_eq!(
+            (
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.reasoning_tokens
+            ),
+            (14, 6386, Some(593))
+        );
+        // No reference delivery: Vertex would need a bucket for it.
+        let sent: serde_json::Value = server.received_requests().await.unwrap()[0]
+            .body_json()
+            .unwrap();
+        assert!(sent["response_format"].get("delivery").is_none());
     }
 }

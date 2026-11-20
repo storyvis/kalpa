@@ -70,12 +70,14 @@ impl VertexAuthToken {
 
     /// Check if the token is expired or about to expire (within 60 seconds)
     pub fn is_expired(&self) -> bool {
-        match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(now) => match self.expires_at.duration_since(UNIX_EPOCH) {
-                Ok(exp) => now.as_secs() + 60 >= exp.as_secs(),
-                Err(_) => true,
-            },
-            Err(_) => true,
+        self.expires_within(Duration::from_secs(60))
+    }
+
+    /// Whether the token expires within `margin` (or already has).
+    pub fn expires_within(&self, margin: Duration) -> bool {
+        match SystemTime::now().checked_add(margin) {
+            Some(then) => then >= self.expires_at,
+            None => true,
         }
     }
 
