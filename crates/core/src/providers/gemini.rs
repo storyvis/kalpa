@@ -861,7 +861,26 @@ impl GenerationProvider for GeminiProvider {
                     url: format!("data:{mime};base64,{data}"),
                     mime: Some(mime),
                 },
-                Some((_, OmniVideo::Uri(uri))) => self.video(&uri).await?,
+                // The video exists and is billed by now. A rate limit on
+                // fetching it must not read as a refused submission, which a
+                // caller may send again: one more try, then a plain failure.
+                Some((_, OmniVideo::Uri(uri))) => match self.video(&uri).await {
+                    Err(KalpaError::RateLimited(limit)) => {
+                        let wait = limit.retry_after.unwrap_or(std::time::Duration::from_secs(1));
+                        tokio::time::sleep(wait.min(std::time::Duration::from_secs(10))).await;
+                        self.video(&uri).await.map_err(|e| match e {
+                            KalpaError::RateLimited(limit) => KalpaError::ProviderError {
+                                status: 502,
+                                message: format!(
+                                    "gemini generated the video but its download was refused: {}",
+                                    limit.message
+                                ),
+                            },
+                            other => other,
+                        })?
+                    }
+                    other => other?,
+                },
                 None => {
                     let status = interaction["status"].as_str().unwrap_or("no status");
                     return Err(KalpaError::ProviderError {
