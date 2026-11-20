@@ -6,11 +6,27 @@ use std::time::Duration;
 
 pub use kalpa_libgen::MAX_RESPONSE_BYTES;
 
+/// The client every provider call goes through. A provider keeps one for its
+/// lifetime, so its connections are pooled across requests:
+///
+/// - HTTP/2 where the provider offers it (Google, OpenAI, Anthropic do): one
+///   multiplexed connection, kept verified by pings, so a dead one is found
+///   by the ping and not by the next request.
+/// - A pooled connection idle for 30 s is dropped before the provider's load
+///   balancer drops it, and TCP keepalive covers the gap, so a request is
+///   never written to a connection the far side has closed.
 pub fn client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(300))
         .redirect(reqwest::redirect::Policy::none())
+        .pool_idle_timeout(Duration::from_secs(30))
+        .tcp_keepalive(Duration::from_secs(30))
+        .tcp_nodelay(true)
+        .http2_adaptive_window(true)
+        .http2_keep_alive_interval(Duration::from_secs(20))
+        .http2_keep_alive_timeout(Duration::from_secs(10))
+        .http2_keep_alive_while_idle(true)
 }
 
 /// Mark credentials sensitive so reqwest/header debug output redacts them.
