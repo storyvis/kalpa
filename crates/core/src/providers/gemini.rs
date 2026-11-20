@@ -630,8 +630,15 @@ fn omni_shape(params: Option<&Value>) -> (&'static str, u32) {
 /// The Interactions body for an Omni video. `params`: `seconds` (or
 /// `duration`; 3–15, default 10), `size` (`"1280x720"`: aspect ratio and
 /// resolution), `aspect_ratio`, `resolution`. An input image makes it
-/// image-to-video.
-fn omni_body(model: &str, request: &GenerationRequest) -> KalpaResult<Value> {
+/// image-to-video. `by_reference`: ask for the video as a file to fetch
+/// (the Gemini API, where an inline one is limited to a few megabytes);
+/// Vertex delivers a reference only to a storage bucket, so it is asked
+/// for the bytes.
+pub(crate) fn omni_body(
+    model: &str,
+    request: &GenerationRequest,
+    by_reference: bool,
+) -> KalpaResult<Value> {
     let params = request.params.as_ref();
     let mut input = Vec::new();
     for part in &request.parts {
@@ -661,9 +668,10 @@ fn omni_body(model: &str, request: &GenerationRequest) -> KalpaResult<Value> {
         "type": "video",
         "resolution": resolution,
         "duration": format!("{seconds}s"),
-        // A video past a few megabytes is only delivered by reference.
-        "delivery": "uri",
     });
+    if by_reference {
+        format["delivery"] = "uri".into();
+    }
     if let Some(ratio) = param(params, &["aspect_ratio", "aspectRatio"]).and_then(Value::as_str) {
         format["aspect_ratio"] = ratio.into();
     } else if let Some((w, h)) = param(params, &["size"])
@@ -677,7 +685,7 @@ fn omni_body(model: &str, request: &GenerationRequest) -> KalpaResult<Value> {
 
 /// The video in an interaction: `(mime, data or uri)` from the model's
 /// output step, wherever its content nests it.
-fn omni_video(value: &Value) -> Option<(String, OmniVideo)> {
+pub(crate) fn omni_video(value: &Value) -> Option<(String, OmniVideo)> {
     match value {
         Value::Object(map) if map.get("type").and_then(Value::as_str) == Some("video") => {
             let mime = map
@@ -697,14 +705,14 @@ fn omni_video(value: &Value) -> Option<(String, OmniVideo)> {
     }
 }
 
-enum OmniVideo {
+pub(crate) enum OmniVideo {
     Data(String),
     Uri(String),
 }
 
 /// An interaction's usage; when it reports none, what the video's length and
 /// resolution are billed (so a video is never metered as free).
-fn omni_usage(interaction: &Value, params: Option<&Value>) -> Usage {
+pub(crate) fn omni_usage(interaction: &Value, params: Option<&Value>) -> Usage {
     let usage = &interaction["usage"];
     let n = |names: &[&str]| {
         names
@@ -730,7 +738,8 @@ fn omni_usage(interaction: &Value, params: Option<&Value>) -> Usage {
         prompt_tokens: prompt,
         completion_tokens: completion,
         total_tokens: prompt + completion,
-        reasoning_tokens: None,
+        // Thinking beside the video is billed at the text rate.
+        reasoning_tokens: (output.is_some() && thoughts > 0).then_some(thoughts),
     }
 }
 
@@ -851,7 +860,7 @@ impl GenerationProvider for GeminiProvider {
                 .http
                 .post(format!("{}/interactions", self.base_url))
                 .header("x-goog-api-key", self.key())
-                .json(&omni_body(model, request)?)
+                .json(&omni_body(model, request, true)?)
                 .send()
                 .await?;
             let resp = check_response(resp, "gemini").await?;
@@ -866,7 +875,9 @@ impl GenerationProvider for GeminiProvider {
                 // caller may send again: one more try, then a plain failure.
                 Some((_, OmniVideo::Uri(uri))) => match self.video(&uri).await {
                     Err(KalpaError::RateLimited(limit)) => {
-                        let wait = limit.retry_after.unwrap_or(std::time::Duration::from_secs(1));
+                        let wait = limit
+                            .retry_after
+                            .unwrap_or(std::time::Duration::from_secs(1));
                         tokio::time::sleep(wait.min(std::time::Duration::from_secs(10))).await;
                         self.video(&uri).await.map_err(|e| match e {
                             KalpaError::RateLimited(limit) => KalpaError::ProviderError {
