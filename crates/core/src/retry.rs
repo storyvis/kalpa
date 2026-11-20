@@ -122,14 +122,21 @@ where
                     return Err(err);
                 }
 
+                // The provider said when to come back: sooner is refused
+                // again, and a wait past the backoff cap is the caller's.
+                let wait = match err.retry_after() {
+                    Some(after) if after > config.max_backoff => return Err(err),
+                    Some(after) => after.max(backoff),
+                    None => backoff,
+                };
                 warn!(
                     attempt = attempt,
                     max_attempts = config.max_attempts,
-                    backoff_ms = backoff.as_millis() as u64,
+                    backoff_ms = wait.as_millis() as u64,
                     "Retryable error, backing off"
                 );
 
-                sleep(backoff).await;
+                sleep(wait).await;
                 backoff = Duration::try_from_secs_f64(backoff.as_secs_f64() * config.multiplier)
                     .unwrap_or(config.max_backoff)
                     .min(config.max_backoff);

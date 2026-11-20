@@ -55,7 +55,7 @@ pub struct CompletionResponse {
 }
 
 /// Token usage statistics.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Usage {
     /// Number of tokens in the prompt.
     pub prompt_tokens: u32,
@@ -63,6 +63,11 @@ pub struct Usage {
     pub completion_tokens: u32,
     /// Total tokens used.
     pub total_tokens: u32,
+    /// The part of `completion_tokens` that is thinking — and, when the
+    /// output is media (an image), every output token that is not the media
+    /// itself. Providers bill these at the text rate, not the media rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u32>,
 }
 
 /// Parameters for an embedding request.
